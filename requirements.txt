@@ -1,0 +1,10 @@
+chainlit==2.2.1
+langchain==0.3.19
+langchain-anthropic==0.3.7
+langchain-community==0.3.18
+langchain-core==0.3.39
+langchain-groq==0.2.4
+langchain-openai==0.3.7
+langsmith==0.3.10
+python-dotenv==1.0.1
+rank_bm25==0.2.2
