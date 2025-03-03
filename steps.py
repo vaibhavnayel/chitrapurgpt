@@ -83,7 +83,7 @@ The query is: {query}
     contextualized_docs = []
     for compressed_doc, doc in zip(compressed_docs, docs):
         if compressed_doc and compressed_doc.passages_in_context:
-            doc.page_content = f"Here are the relevant passages from this document: {"\n".join(compressed_doc.passages_in_context)}"
+            doc.page_content = f"Here are the relevant passages from this document: {'\n'.join(compressed_doc.passages_in_context)}"
             contextualized_docs.append(doc)
     logging.info(f"number of contextualized docs: {len(contextualized_docs)}")
     return contextualized_docs
