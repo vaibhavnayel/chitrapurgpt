@@ -1,24 +1,18 @@
-import asyncio
-from typing import Annotated
 import logging
 import re
 import chainlit as cl
-from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_community.retrievers.bm25 import BM25Retriever
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from langchain_core.documents import Document
 from langchain_core.tools import tool
 from langsmith import traceable
 from pydantic import BaseModel, Field
 
-from retrievers import format_docs, load_docs_from_jsonl, BM25Retriever, HybridRetriever, deduplicate_docs, FuzzyMatchRetriever, load_vector_store
+from retrievers import format_docs, deduplicate_docs, load_vector_store
 
 
-bm_25_retriever = BM25Retriever.from_documents(documents=load_docs_from_jsonl('knowledge_base.jsonl'), k=4)
-vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 4, "fetch_k": 10})
-retriever = HybridRetriever(bm_25_retriever=bm_25_retriever, vector_db_retriever=vector_db_retriever)
+retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 5, "fetch_k": 20})
 
 @tool
 @cl.step(name="knowledge base search engine")
@@ -32,7 +26,7 @@ async def search_knowledge_base(research_query: str) -> str:
     queries = await generate_search_queries(research_query)
 
     # search the knowledge base
-    docs = await retriever.abatch(queries)
+    docs = retriever.batch(queries)
     docs = deduplicate_docs(docs)
 
     #contextual compression
@@ -56,8 +50,6 @@ Try to make queries short and concise. They will be search with a mix of exact m
         SystemMessage(content=parser_prompt),
         HumanMessage(content=f"here is the question: {research_instructions}")
     ]
-    # return (model="gpt-4o", temperature=0).with_structured_output(Queries).ainvoke(messages).queries
-    # return await ChatGroq(model="llama-3.3-70b-versatile", temperature=0).with_structured_output(Queries).ainvoke(messages).queries
     response = await ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0).with_structured_output(Queries).ainvoke(messages)
     logging.info(f" generated queries: {response.queries}")
     return response.queries

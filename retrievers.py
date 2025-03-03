@@ -1,7 +1,4 @@
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.documents import Document
-from langchain_core.retrievers import BaseRetriever
-from langchain_community.retrievers.bm25 import BM25Retriever
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
 import pinecone
@@ -73,7 +70,6 @@ def add_to_vector_store(documents: list[Document]) -> None:
             ids=new_doc_ids
         )
 
-
 def create_or_fetch_pinecone_index(index_name:str)->pinecone.Index:
     pc = Pinecone()
     existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
@@ -85,7 +81,7 @@ def create_or_fetch_pinecone_index(index_name:str)->pinecone.Index:
         pc.create_index(
             name=index_name,
             dimension=3072,
-            metric="cosine",
+            metric="dotproduct",
             spec=ServerlessSpec(cloud="aws", region="us-east-1"),
         )
         while not pc.describe_index(index_name).status["ready"]:
@@ -138,69 +134,6 @@ def save_docs_to_jsonl(docs: list[Document], file_path: str) -> None:
     with open(file_path, 'w') as jsonl_file:
         for doc in existing_docs.values():
             jsonl_file.write(doc.model_dump_json() + '\n')
-
-class ExactMatchRetriever(BaseRetriever):
-    documents: list[Document]
-    k: int
-
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
-    ) -> list[Document]:
-        """Sync implementations for retriever."""
-        matching_documents = []
-        for document in self.documents:
-            for word in query.split():
-                metadata_text = ' '.join([str(value) for value in document.metadata.values()])
-                count_metadata = metadata_text.lower().count(word.lower())
-                count_content = document.page_content.lower().count(word.lower())
-                count = count_content + count_metadata
-                if count > 0:
-                    matching_documents.append({
-                        "document": document,
-                        "count": count
-                    })
-
-        matching_documents.sort(key=lambda x: x["count"], reverse=True)
-        return [x["document"] for x in matching_documents][:self.k]
-
-class FuzzyMatchRetriever(BaseRetriever):
-    documents: list[Document]
-    k: int
-
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
-    ) -> list[Document]:
-        """Sync implementations for retriever using fuzzy matching."""
-        from difflib import SequenceMatcher
-
-        matching_documents = []
-        for document in self.documents:
-            # Calculate fuzzy match ratio for content and metadata
-            metadata_text = ' '.join([str(value) for value in document.metadata.values()])
-            content_ratio = SequenceMatcher(None, query.lower(), document.page_content.lower()).ratio()
-            metadata_ratio = SequenceMatcher(None, query.lower(), metadata_text.lower()).ratio()
-            
-            # Use the higher of the two ratios
-            match_ratio = max(content_ratio, metadata_ratio)
-            
-            if match_ratio > 0.1: # Threshold to consider a match
-                matching_documents.append({
-                    "document": document,
-                    "ratio": match_ratio
-                })
-
-        # Sort by match ratio and return top k
-        matching_documents.sort(key=lambda x: x["ratio"], reverse=True)
-        return [x["document"] for x in matching_documents][:self.k]
-
-class HybridRetriever(BaseRetriever):
-    bm_25_retriever: BM25Retriever
-    vector_db_retriever: BaseRetriever
-
-    def _get_relevant_documents(
-        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
-    ) -> list[Document]:
-        return self.bm_25_retriever.invoke(query) + self.vector_db_retriever.invoke(query)
 
 def format_docs(docs: list[Document]) -> str:
     return "\n".join([f"{i}. {doc.metadata['title']}\n Metadata:\n{pformat(doc.metadata)}\nContent:\n{doc.page_content}\n{'-'*100}" for i, doc in enumerate(docs)])
