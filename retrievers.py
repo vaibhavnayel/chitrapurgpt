@@ -195,13 +195,12 @@ class FuzzyMatchRetriever(BaseRetriever):
 
 class HybridRetriever(BaseRetriever):
     bm_25_retriever: BM25Retriever
-    fuzzy_match_retriever: FuzzyMatchRetriever
     vector_db_retriever: BaseRetriever
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
-        return self.bm_25_retriever.invoke(query) + self.fuzzy_match_retriever.invoke(query) + self.vector_db_retriever.invoke(query)
+        return self.bm_25_retriever.invoke(query) + self.vector_db_retriever.invoke(query)
 
 def format_docs(docs: list[Document]) -> str:
     return "\n".join([f"{i}. {doc.metadata['title']}\n Metadata:\n{pformat(doc.metadata)}\nContent:\n{doc.page_content}\n{'-'*100}" for i, doc in enumerate(docs)])

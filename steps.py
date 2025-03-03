@@ -16,11 +16,9 @@ from pydantic import BaseModel, Field
 from retrievers import format_docs, load_docs_from_jsonl, BM25Retriever, HybridRetriever, deduplicate_docs, FuzzyMatchRetriever, load_vector_store
 
 
-documents = load_docs_from_jsonl('knowledge_base.jsonl')
-bm_25_retriever = BM25Retriever.from_documents(documents=documents, k=3)
-fuzzy_match_retriever = FuzzyMatchRetriever(documents=documents, k=3)
-vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 3, "fetch_k": 10})
-retriever = HybridRetriever(bm_25_retriever=bm_25_retriever, fuzzy_match_retriever=fuzzy_match_retriever, vector_db_retriever=vector_db_retriever)
+bm_25_retriever = BM25Retriever.from_documents(documents=load_docs_from_jsonl('knowledge_base.jsonl'), k=4)
+vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 4, "fetch_k": 10})
+retriever = HybridRetriever(bm_25_retriever=bm_25_retriever, vector_db_retriever=vector_db_retriever)
 
 @tool
 @cl.step(name="knowledge base search engine")
