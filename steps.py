@@ -9,10 +9,11 @@ from langchain_core.tools import tool
 from langsmith import traceable
 from pydantic import BaseModel, Field
 
-from retrievers import format_docs, deduplicate_docs, load_vector_store
+from retrievers import format_docs, deduplicate_docs, load_vector_store, FuzzyMatchRetriever, load_docs_from_jsonl, HybridRetriever
 
-
-retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 5, "fetch_k": 20})
+fuzzy_retriever = FuzzyMatchRetriever(documents=load_docs_from_jsonl("knowledge_base.jsonl"), k=5)
+vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 5, "fetch_k": 20})
+retriever = HybridRetriever(fuzzy_retriever=fuzzy_retriever, vector_db_retriever=vector_db_retriever)
 
 @tool
 @cl.step(name="knowledge base search engine")
@@ -56,7 +57,7 @@ Try to make queries short and concise. They will be search with a mix of exact m
 
 class RelevantPassages(BaseModel):
     reasoning: str = Field(description="reasoning for the compressed document")
-    passages_in_context: list[str] | None = Field(description="summarised passages with quotes that are relevant to the query. leave this blank if no relevant passages are found. each passage can be upto 5 sentences long")
+    passages_in_context: list[str] = Field(description="summarised passages with quotes that are relevant to the query. If there is no relevant information, say 'no relevant information found'")
 
 @traceable
 @cl.step(name="document analysis")
@@ -64,6 +65,10 @@ async def contextualize_docs(docs: list[Document], query: str) -> list[Document]
     prompt = f"""
 Your task is to extract information relevant to the query from the following document.
 Your extractions should accurately summarise the document in the context of the query while also quoting the passage verbatim. 
+Make sure that the quoted passages are talking about the same topic, person or place as the query.
+Do not make up answers or include information that is not present in the document.
+If you find that the document is not relevant to the query, the passage should say "no relevant information found".
+It is also essential that you don't miss any important information and don't include any information that is not present in the document, otherwise the user will not get a complete answer to their question.
 The query is: {query}
     """
     messages_batch = [[SystemMessage(content=prompt), HumanMessage(content=f"Here is the document: {format_docs([doc])}")] for doc in docs]

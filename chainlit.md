@@ -5,7 +5,6 @@ Welcome to your AI-powered assistant for all things Chitrapur! I'm here to help 
 ## What I Can Help You With 📚
 
 - **Historical Information:** Learn about the history, traditions, and cultural heritage of the Chitrapur Saraswat community
-- **Language Assistance:** Get help with Konkani, Sanskrit, and other relevant languages
 - **Cultural Guidance:** Understand customs, rituals, and cultural practices
 - **General Knowledge:** Ask questions about community events, organizations, and activities
 - **Educational Support:** Get assistance with religious texts, scriptures, and philosophical concepts

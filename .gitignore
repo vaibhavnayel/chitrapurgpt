@@ -2,3 +2,4 @@
 .files
 __pycache__/
 documents/
+.DS_Store
