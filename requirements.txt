@@ -12,4 +12,5 @@ rank_bm25==0.2.2
 langchain-pinecone==0.2.3
 unidecode==1.3.8
 pinecone==5.4.2
-pinecone-text==0.9.0
+rapidfuzz==3.12.3
+metaphone==0.6

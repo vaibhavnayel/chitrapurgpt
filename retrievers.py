@@ -10,6 +10,8 @@ import time
 from pprint import pprint, pformat
 import logging
 import dotenv
+from rapidfuzz import fuzz, process
+from metaphone import doublemetaphone
 
 dotenv.load_dotenv()
 
@@ -155,31 +157,120 @@ def deduplicate_docs(docs: list[Document]) -> list[Document]:
 class FuzzyMatchRetriever(BaseRetriever):
     documents: list[Document]
     k: int
+    content_weight: float = 0.9
+    metadata_weight: float = 0.1
+    threshold: float = 30
+    
+    def __init__(self, **kwargs):
+        """Initialize with pre-processed document data for faster matching."""
+        super().__init__(**kwargs)
+        self._initialize_document_cache()
+    
+    def _initialize_document_cache(self):
+        """Pre-process documents once during initialization."""
+        self._doc_cache = []
+        
+        for doc in self.documents:
+            # Pre-compute lowercase content and tokens
+            content = doc.page_content.lower()
+            content_tokens = set(content.split())
+            
+            # Pre-compute phonetic codes for content
+            content_phonetic = ' '.join([
+                doublemetaphone(word)[0] 
+                for word in content.split() 
+                if word
+            ])
+            
+            # Pre-process metadata
+            important_metadata = {
+                k: str(v).lower() 
+                for k, v in doc.metadata.items() 
+                if k in ['title', 'summary', 'description']
+            }
+            
+            # Pre-compute phonetic codes for metadata
+            metadata_phonetic = {
+                k: ' '.join([
+                    doublemetaphone(word)[0] 
+                    for word in v.split() 
+                    if word
+                ])
+                for k, v in important_metadata.items()
+            }
+            
+            self._doc_cache.append({
+                'document': doc,
+                'content': content,
+                'content_tokens': content_tokens,
+                'content_phonetic': content_phonetic,
+                'metadata': important_metadata,
+                'metadata_phonetic': metadata_phonetic
+            })
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
-        """Sync implementations for retriever using fuzzy matching."""
-        from difflib import SequenceMatcher
-
+        """More efficient implementation using pre-processed data."""
+        query = query.lower()
+        query_tokens = set(query.split())
+        query_phonetic = ' '.join([
+            doublemetaphone(word)[0] 
+            for word in query.split() 
+            if word
+        ])
+        
         matching_documents = []
-        for document in self.documents:
-            # Calculate fuzzy match ratio for content and metadata
-            metadata_text = ' '.join([str(value) for value in document.metadata.values()])
-            content_ratio = SequenceMatcher(None, query.lower(), document.page_content.lower()).ratio()
-            metadata_ratio = SequenceMatcher(None, query.lower(), metadata_text.lower()).ratio()
+        
+        # Process documents in batches for better performance
+        batch_size = 100
+        for i in range(0, len(self._doc_cache), batch_size):
+            batch = self._doc_cache[i:i + batch_size]
             
-            # Use the higher of the two ratios
-            match_ratio = max(content_ratio, metadata_ratio)
-            
-            if match_ratio > 0.1: # Threshold to consider a match
-                matching_documents.append({
-                    "document": document,
-                    "ratio": match_ratio
-                })
-
-        # Sort by match ratio and return top k
-        matching_documents.sort(key=lambda x: x["ratio"], reverse=True)
+            for doc_data in batch:
+                # Token overlap (pre-computed sets)
+                token_overlap = len(query_tokens & doc_data['content_tokens']) / len(query_tokens) * 100
+                
+                # Content matching
+                content_ratio = fuzz.partial_ratio(query, doc_data['content'])
+                
+                # Phonetic matching (using pre-computed codes)
+                phonetic_score = fuzz.token_set_ratio(query_phonetic, doc_data['content_phonetic'])
+                
+                # Metadata matching
+                metadata_scores = []
+                for value in doc_data['metadata'].values():
+                    fuzzy_score = fuzz.ratio(query, value)
+                    metadata_scores.append(fuzzy_score)
+                
+                # Phonetic metadata matching
+                for phonetic_value in doc_data['metadata_phonetic'].values():
+                    phonetic_meta_score = fuzz.token_set_ratio(query_phonetic, phonetic_value)
+                    metadata_scores.append(phonetic_meta_score)
+                
+                metadata_ratio = max(metadata_scores) if metadata_scores else 0
+                
+                # Combined score
+                content_score = (content_ratio + token_overlap + phonetic_score) / 3
+                match_ratio = (
+                    self.content_weight * content_score + 
+                    self.metadata_weight * metadata_ratio
+                )
+                
+                if match_ratio > self.threshold:
+                    matching_documents.append({
+                        "document": doc_data['document'],
+                        "ratio": match_ratio,
+                        "token_overlap": token_overlap,
+                        "phonetic_score": phonetic_score
+                    })
+        
+        # Sort only the documents that passed the threshold
+        matching_documents.sort(
+            key=lambda x: (x["phonetic_score"], x["token_overlap"], x["ratio"]), 
+            reverse=True
+        )
+        
         return [x["document"] for x in matching_documents][:self.k]
 
 class HybridRetriever(BaseRetriever):
