@@ -1,6 +1,8 @@
 from langchain_core.documents import Document
 from langchain_pinecone import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.retrievers import BaseRetriever
 import pinecone
 from pinecone import Pinecone, ServerlessSpec
 import json
@@ -149,3 +151,42 @@ def deduplicate_docs(docs: list[Document]) -> list[Document]:
             unique_docs.append(doc)
     logging.info(f"deduplicated {len(docs)} docs to {len(unique_docs)} docs")
     return unique_docs
+
+class FuzzyMatchRetriever(BaseRetriever):
+    documents: list[Document]
+    k: int
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> list[Document]:
+        """Sync implementations for retriever using fuzzy matching."""
+        from difflib import SequenceMatcher
+
+        matching_documents = []
+        for document in self.documents:
+            # Calculate fuzzy match ratio for content and metadata
+            metadata_text = ' '.join([str(value) for value in document.metadata.values()])
+            content_ratio = SequenceMatcher(None, query.lower(), document.page_content.lower()).ratio()
+            metadata_ratio = SequenceMatcher(None, query.lower(), metadata_text.lower()).ratio()
+            
+            # Use the higher of the two ratios
+            match_ratio = max(content_ratio, metadata_ratio)
+            
+            if match_ratio > 0.1: # Threshold to consider a match
+                matching_documents.append({
+                    "document": document,
+                    "ratio": match_ratio
+                })
+
+        # Sort by match ratio and return top k
+        matching_documents.sort(key=lambda x: x["ratio"], reverse=True)
+        return [x["document"] for x in matching_documents][:self.k]
+
+class HybridRetriever(BaseRetriever):
+    fuzzy_retriever: FuzzyMatchRetriever
+    vector_db_retriever: BaseRetriever
+
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun
+    ) -> list[Document]:
+        return self.fuzzy_retriever.invoke(query) + self.vector_db_retriever.invoke(query)
