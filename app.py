@@ -6,6 +6,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 
 from steps import respond_to_user_message
+from search_engine import search_knowledge_base
 
 @cl.password_auth_callback
 def auth_callback(username: str, password: str):
@@ -17,9 +18,13 @@ def auth_callback(username: str, password: str):
         )
     else:
         return None
+    
+commands = [
+    {"id": "Keyword Search", "icon": "file-search", "description": "Keyword search across all documents"},
+]
 
 @cl.on_chat_start
-def on_chat_start():
+async def on_chat_start():
     prompt = """
 You are a helpful research assistant who can answer questions about the chitrapur saraswat religious community by thoroughly studying magazine articles in your knowledge base. 
 you have access to a search_knowledge_base tool that can search the knowledge base to get relevant magazine articles. 
@@ -48,14 +53,19 @@ sources:
 </citation_example>
     """
     cl.user_session.set("messages", [SystemMessage(content=prompt)])
-
+    await cl.context.emitter.set_commands(commands)
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    messages = cl.user_session.get("messages")
+    if message.command == "Keyword Search":
+        query = message.content
+        search_results = search_knowledge_base(query)
+        await cl.Message(content=search_results).send()
+    else:
+        messages = cl.user_session.get("messages")
 
-    messages.append(HumanMessage(content=message.content))
-    messages.append(await respond_to_user_message(messages))
-    
-    cl.user_session.set("messages", messages)
-    await cl.Message(content=messages[-1].content).send()
+        messages.append(HumanMessage(content=message.content))
+        messages.append(await respond_to_user_message(messages))
+        
+        cl.user_session.set("messages", messages)
+        await cl.Message(content=messages[-1].content).send()
