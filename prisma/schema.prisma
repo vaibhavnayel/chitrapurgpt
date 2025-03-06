@@ -1,0 +1,126 @@
+generator client {
+  provider             = "prisma-client-js"
+  previewFeatures      = ["postgresqlExtensions"]
+  recursive_type_depth = "5"
+  interface            = "asyncio"
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DATABASE_URL")
+  extensions = [pgcrypto]
+}
+
+model Element {
+  id          String   @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
+  threadId    String?
+  stepId      String
+  metadata    Json
+  mime        String?
+  name        String
+  objectKey   String?
+  url         String?
+  chainlitKey String?
+  display     String?
+  size        String?
+  language    String?
+  page        Int?
+  props       Json?
+  step        Step     @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  thread      Thread?  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([stepId])
+  @@index([threadId])
+}
+
+model User {
+  id         String   @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+  metadata   Json
+  identifier String   @unique
+  threads    Thread[]
+
+  @@index([identifier])
+}
+
+model Feedback {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  stepId    String?
+  name      String
+  value     Float
+  comment   String?
+  Step      Step?    @relation(fields: [stepId], references: [id])
+
+  @@index([createdAt])
+  @@index([name])
+  @@index([stepId])
+  @@index([value])
+  @@index([name, value])
+}
+
+model Step {
+  id        String     @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @default(now()) @updatedAt
+  parentId  String?
+  threadId  String?
+  input     String?
+  metadata  Json
+  name      String?
+  output    String?
+  type      StepType
+  showInput String?    @default("json")
+  isError   Boolean?   @default(false)
+  startTime DateTime
+  endTime   DateTime
+  elements  Element[]
+  Feedback  Feedback[]
+  parent    Step?      @relation("ParentChild", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Step[]     @relation("ParentChild")
+  thread    Thread?    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([endTime])
+  @@index([parentId])
+  @@index([startTime])
+  @@index([threadId])
+  @@index([type])
+  @@index([name])
+  @@index([threadId, startTime, endTime])
+}
+
+model Thread {
+  id        String    @id @default(dbgenerated("gen_random_uuid()"))
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @default(now()) @updatedAt
+  deletedAt DateTime?
+  name      String?
+  metadata  Json
+  tags      String[]  @default([])
+  userId    String?
+  elements  Element[]
+  steps     Step[]
+  User      User?     @relation(fields: [userId], references: [id])
+
+  @@index([createdAt])
+  @@index([name])
+}
+
+enum StepType {
+  assistant_message
+  embedding
+  llm
+  retrieval
+  rerank
+  run
+  system_message
+  tool
+  undefined
+  user_message
+}

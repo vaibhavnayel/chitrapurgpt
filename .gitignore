@@ -3,3 +3,7 @@
 __pycache__/
 documents/
 .DS_Store
+node_modules/
+package.json
+package-lock.json
+.env.prod

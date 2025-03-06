@@ -2,31 +2,28 @@ import os
 from pprint import pprint
 
 import chainlit as cl
-from langchain_core.messages import SystemMessage, HumanMessage
+from chainlit.types import ThreadDict
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_core.tools import tool
 
 from steps import respond_to_user_message
 from search_engine import search_knowledge_base
 
-@cl.password_auth_callback
-def auth_callback(username: str, password: str):
-    # Fetch the user matching username from your database
-    # and compare the hashed password with the value stored in the database
-    if (username, password) == (os.getenv("USERNAME"), os.getenv("PASSWORD")):
-        return cl.User(
-            identifier="admin", metadata={"role": "admin", "provider": "credentials"}
-        )
-    else:
-        return None
+    
+@cl.oauth_callback
+def oauth_callback(
+    provider_id: str,
+    token: str,
+    raw_user_data: dict[str, str],
+    default_user: cl.User) -> cl.User | None:
+  return default_user
     
 commands = [
     {"id": "Exact Search", "icon": "crosshair", "description": "Exact search across all documents. 'sans' will not match 'sanskrit'."},
     {"id": "Fuzzy Search", "icon": "search", "description": "Fuzzy search across all documents. 'sans' will match 'sanskar' and 'sanskrit'."},
 ]
 
-@cl.on_chat_start
-async def on_chat_start():
-    prompt = """
+system_prompt = """
 You are a helpful research assistant who can answer questions about the chitrapur saraswat religious community by thoroughly studying magazine articles in your knowledge base. 
 you have access to a search_knowledge_base tool that can search the knowledge base to get relevant magazine articles. 
 You may use this tool multiple times to get more information.
@@ -53,17 +50,31 @@ sources:
 
 </citation_example>
     """
-    cl.user_session.set("messages", [SystemMessage(content=prompt)])
+@cl.on_chat_start
+async def on_chat_start():
+    cl.user_session.set("messages", [SystemMessage(content=system_prompt)])
     await cl.context.emitter.set_commands(commands)
+
+@cl.on_chat_resume
+async def on_chat_resume(thread: ThreadDict):
+    cl.user_session.set("messages", [SystemMessage(content=system_prompt)])
+    
+    for message in thread["steps"]:
+        if message["type"] == "user_message":
+            cl.user_session.get("messages").append(HumanMessage(content=message["output"]))
+        elif message["type"] == "assistant_message":
+            cl.user_session.get("messages").append(AIMessage(content=message["output"]))
+    await cl.context.emitter.set_commands(commands)
+
 
 @cl.on_message
 async def on_message(message: cl.Message):
     if message.command == "Fuzzy Search":
         search_results = search_knowledge_base(message.content, exact=False)
-        await cl.Message(content=search_results).send()
+        await cl.Message(content=search_results, tags=["command_output"]).send()
     elif message.command == "Exact Search":
         search_results = search_knowledge_base(message.content, exact=True)
-        await cl.Message(content=search_results).send()
+        await cl.Message(content=search_results, tags=["command_output"]).send()
     else:
         messages = cl.user_session.get("messages")
 
