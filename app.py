@@ -20,7 +20,8 @@ def auth_callback(username: str, password: str):
         return None
     
 commands = [
-    {"id": "Keyword Search", "icon": "file-search", "description": "Keyword search across all documents"},
+    {"id": "Exact Search", "icon": "crosshair", "description": "Exact search across all documents. 'sans' will not match 'sanskrit'."},
+    {"id": "Fuzzy Search", "icon": "search", "description": "Fuzzy search across all documents. 'sans' will match 'sanskar' and 'sanskrit'."},
 ]
 
 @cl.on_chat_start
@@ -57,9 +58,11 @@ sources:
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    if message.command == "Keyword Search":
-        query = message.content
-        search_results = search_knowledge_base(query)
+    if message.command == "Fuzzy Search":
+        search_results = search_knowledge_base(message.content, exact=False)
+        await cl.Message(content=search_results).send()
+    elif message.command == "Exact Search":
+        search_results = search_knowledge_base(message.content, exact=True)
         await cl.Message(content=search_results).send()
     else:
         messages = cl.user_session.get("messages")

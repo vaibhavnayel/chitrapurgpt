@@ -67,14 +67,16 @@ def parse_boolean_query(query: str):
     parsed_query, _ = parse_expression(tokens)
     return parsed_query
 
-def evaluate_query(query_expr, doc):
+def evaluate_query(query_expr, doc, exact: bool = False):
     """
     Evaluate a parsed boolean query against a document.
     Returns True if the document matches the query, False otherwise.
     """
     if isinstance(query_expr, str):
-        # Simple term matching
-        return query_expr.lower() in doc.page_content.lower().split()
+        if exact:
+            return query_expr.lower() in doc.page_content.lower().split()
+        else:
+            return query_expr.lower() in doc.page_content.lower()
     
     if isinstance(query_expr, dict):
         # Compound expression with AND/OR
@@ -82,13 +84,13 @@ def evaluate_query(query_expr, doc):
         operands = query_expr[operator]
         
         if operator == 'AND':
-            return evaluate_query(operands[0], doc) and evaluate_query(operands[1], doc)
+            return evaluate_query(operands[0], doc, exact) and evaluate_query(operands[1], doc, exact)
         elif operator == 'OR':
-            return evaluate_query(operands[0], doc) or evaluate_query(operands[1], doc)
+            return evaluate_query(operands[0], doc, exact) or evaluate_query(operands[1], doc, exact)
     
     return False
 
-def search_knowledge_base(query: str):
+def search_knowledge_base(query: str, exact: bool = False):
     """
     Search the knowledge base for documents matching the boolean query.
     Supports nested parentheses, AND, and OR operators.
@@ -98,7 +100,7 @@ def search_knowledge_base(query: str):
     
     matching_docs = []
     for doc in docs:
-        if evaluate_query(parsed_query, doc):
+        if evaluate_query(parsed_query, doc, exact):
             matching_docs.append(doc)
     
     print(f"Found {len(matching_docs)} matching documents")

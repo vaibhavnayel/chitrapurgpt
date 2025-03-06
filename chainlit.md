@@ -15,6 +15,7 @@ Welcome to your AI-powered assistant for all things Chitrapur! I'm here to help 
 2. Be as specific as possible in your queries
 3. Feel free to ask follow-up questions
 4. I can handle both simple and complex questions about Chitrapur culture and heritage
+5. You can also use boolean queries to search for specific information for example: `/Keyword Search(viswesvara OR vishveshwara OR visveswara) AND (temple OR mandir)`. boolean operators supported are AND, OR and must be capitalized.
 
 ## Tips for Best Results ✨
 
