@@ -16,7 +16,10 @@ def oauth_callback(
     token: str,
     raw_user_data: dict[str, str],
     default_user: cl.User) -> cl.User | None:
-  return default_user
+    if default_user.identifier in open("email_whitelist.txt").read().split(","):
+        return default_user
+    else:
+        return None
     
 commands = [
     {"id": "Exact Search", "icon": "crosshair", "description": "Exact search across all documents. 'sans' will not match 'sanskrit'."},
