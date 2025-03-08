@@ -17,7 +17,7 @@ def oauth_callback(
     raw_user_data: dict[str, str],
     default_user: cl.User) -> cl.User | None:
 
-    whitelist = open("email_whitelist.txt").read().split(",")
+    whitelist = open("email_whitelist.txt").read().replace(" ","").split(",")
     logging.info(f"oauth_callback: {default_user}")
     logging.info(f"whitelist: {whitelist}")
     if default_user.identifier in whitelist:
