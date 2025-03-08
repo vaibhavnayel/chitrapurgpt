@@ -52,7 +52,7 @@
             }
         },
         "provider": {
-            "continue": "Continue with {{provider}}"
+            "continue": "Login"
         }
     },
     "chat": {
