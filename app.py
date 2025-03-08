@@ -8,7 +8,7 @@ from langchain_core.tools import tool
 
 from steps import respond_to_user_message
 from search_engine import search_knowledge_base
-
+import logging
     
 @cl.oauth_callback
 def oauth_callback(
@@ -16,9 +16,15 @@ def oauth_callback(
     token: str,
     raw_user_data: dict[str, str],
     default_user: cl.User) -> cl.User | None:
-    if default_user.identifier in open("email_whitelist.txt").read().split(","):
+
+    whitelist = open("email_whitelist.txt").read().split(",")
+    logging.info(f"oauth_callback: {default_user}")
+    logging.info(f"whitelist: {whitelist}")
+    if default_user.identifier in whitelist:
+        logging.info(f"user {default_user.identifier} in whitelist")
         return default_user
     else:
+        logging.info(f"user {default_user.identifier} not in whitelist")
         return None
     
 commands = [
