@@ -3,6 +3,7 @@ import re
 import chainlit as cl
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
 from langchain_core.documents import Document
 from langchain_core.tools import tool
@@ -72,7 +73,10 @@ It is also essential that you don't miss any important information and don't inc
 The query is: {query}
     """
     messages_batch = [[SystemMessage(content=prompt), HumanMessage(content=f"Here is the document: {format_docs([doc])}")] for doc in docs]
-    llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages)
+    # llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).withretry()
+    # llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
+    # llm = ChatAnthropic(model="claude-3-5-haiku-latest", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
+    llm = ChatOpenAI(model="gpt-4.1", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
     compressed_docs = await llm.abatch(messages_batch)
 
     contextualized_docs = []
