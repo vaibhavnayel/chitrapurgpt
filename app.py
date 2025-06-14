@@ -23,9 +23,9 @@ def oauth_callback(
     if default_user.identifier in whitelist:
         logging.info(f"user {default_user.identifier} in whitelist")
         return default_user
-    else:
-        logging.info(f"user {default_user.identifier} not in whitelist")
-        return None
+
+    logging.info(f"user {default_user.identifier} not in whitelist")
+    return None
     
 commands = [
     {"id": "Exact Search", "icon": "crosshair", "description": "Exact search across all documents. 'sans' will not match 'sanskrit'."},
