@@ -18,7 +18,7 @@
     },
     "auth": {
         "login": {
-            "title": "Login to access the app",
+            "title": "",
             "form": {
                 "email": {
                     "label": "Email address",
