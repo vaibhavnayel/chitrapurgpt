@@ -1,5 +1,5 @@
 from langchain_core.documents import Document
-from langchain_pinecone import PineconeVectorStore
+from pinecone_vectorstore_wrapper import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever

@@ -1,3 +1,4 @@
+from datetime import datetime
 import os
 from pprint import pprint
 
@@ -25,14 +26,14 @@ def oauth_callback(
         return default_user
 
     logging.info(f"user {default_user.identifier} not in whitelist")
-    return None
+    return
     
 commands = [
     {"id": "Exact Search", "icon": "crosshair", "description": "Exact search across all documents. 'sans' will not match 'sanskrit'."},
     {"id": "Fuzzy Search", "icon": "search", "description": "Fuzzy search across all documents. 'sans' will match 'sanskar' and 'sanskrit'."},
 ]
 
-system_prompt = """
+system_prompt = f"""
 You are a helpful research assistant who can answer questions about the chitrapur saraswat religious community by thoroughly studying magazine articles in your knowledge base. 
 you have access to a search_knowledge_base tool that can search the knowledge base to get relevant magazine articles. 
 You may use this tool multiple times to get more information.
@@ -41,6 +42,8 @@ When responding to the user, add citations to the sources you used to answer in 
 Before you give your answer to the user, think about your reasoning step by step and draft your answer, making sure citation formatting is correct.
 Put your final answer in <final_answer></final_answer> tags. Don't forget to close the tags.
 Only answer questions with information from the knowledge base. Don't use your own knowledge to answer the question.
+
+Today's date is {datetime.now().strftime("%B %d, %Y")}.
 
 Here is some relevant information about the chitrapur saraswat samaj:
 - the main holy site of the chitrapur saraswat samaj is the chitrapur math.

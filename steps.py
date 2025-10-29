@@ -2,6 +2,7 @@ import logging
 import re
 import chainlit as cl
 from langchain_anthropic import ChatAnthropic
+from langchain_core.runnables.config import RunnableConfig
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage, BaseMessage
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field
 from retrievers import format_docs, deduplicate_docs, load_vector_store, FuzzyMatchRetriever, load_docs_from_jsonl, HybridRetriever
 
 fuzzy_retriever = FuzzyMatchRetriever(documents=load_docs_from_jsonl("knowledge_base.jsonl"), k=5)
-vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 5, "fetch_k": 20})
+vector_db_retriever = load_vector_store().as_retriever(search_type="mmr",search_kwargs={"k": 5, "fetch_k": 15})
 retriever = HybridRetriever(fuzzy_retriever=fuzzy_retriever, vector_db_retriever=vector_db_retriever)
 
 @tool
@@ -52,7 +53,7 @@ Try to make queries short and concise. They will be search with a mix of exact m
         SystemMessage(content=parser_prompt),
         HumanMessage(content=f"here is the question: {research_instructions}")
     ]
-    response = await ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0).with_structured_output(Queries).ainvoke(messages)
+    response = await ChatAnthropic(model="claude-sonnet-4-5", temperature=0).with_structured_output(Queries).ainvoke(messages)
     logging.info(f" generated queries: {response.queries}")
     return response.queries
 
@@ -76,12 +77,12 @@ The query is: {query}
     # llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).withretry()
     # llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash-preview-04-17", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
     # llm = ChatAnthropic(model="claude-3-5-haiku-latest", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
-    llm = ChatOpenAI(model="gpt-4.1", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
-    compressed_docs = await llm.abatch(messages_batch)
+    llm = ChatOpenAI(model="gpt-5-mini", temperature=0, max_tokens=8000).with_structured_output(RelevantPassages).with_retry()
+    compressed_docs = await llm.abatch(messages_batch, config=RunnableConfig(max_concurrency=40))
 
     contextualized_docs = []
     for compressed_doc, doc in zip(compressed_docs, docs):
-        if compressed_doc and compressed_doc.passages_in_context:
+        if compressed_doc and compressed_doc.passages_in_context and ("no relevant information" not in compressed_doc.passages_in_context[0]) and len(compressed_doc.passages_in_context) > 0:
             doc.page_content = f"Here are the relevant passages from this document: {'\n'.join(compressed_doc.passages_in_context)}"
             contextualized_docs.append(doc)
     logging.info(f"number of contextualized docs: {len(contextualized_docs)}")
@@ -89,7 +90,7 @@ The query is: {query}
 
 @traceable
 async def handle_tool_call(messages: list[BaseMessage]) -> str:
-    llm = ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0, max_tokens=8000).bind_tools([search_knowledge_base], parallel_tool_calls=False)
+    llm = ChatAnthropic(model="claude-sonnet-4-5", temperature=0, max_tokens=8000).bind_tools([search_knowledge_base], parallel_tool_calls=False)
 
     for tool_call in messages[-1].tool_calls:
         if tool_call["name"] == "search_knowledge_base":
@@ -108,7 +109,7 @@ def parse_final_answer(message: BaseMessage) -> BaseMessage:
 
 @traceable
 async def respond_to_user_message(messages: list[BaseMessage]) -> str:
-    llm = ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0, max_tokens=8000).bind_tools([search_knowledge_base], parallel_tool_calls=False)
+    llm = ChatAnthropic(model="claude-sonnet-4-5", temperature=0, max_tokens=8000).bind_tools([search_knowledge_base], parallel_tool_calls=False)
     messages.append(await llm.ainvoke(messages))
 
     while messages[-1].tool_calls:
