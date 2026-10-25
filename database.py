@@ -63,20 +63,44 @@ class Feedback(db.Model):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
-def init_db(app):
-    """Initialize the database with the Flask app"""
+def init_db(app, retries=None, delay=None):
+    """Initialize the database with the Flask app.
+
+    The table check connects to Postgres at import time. On Render a resumed service can start
+    before its database has finished resuming, so retry for a while instead of crashing the
+    worker; if the database still isn't reachable, start anyway (the tables already exist in
+    production, and pool_pre_ping reconnects once the database is up).
+    """
+    import os
+    import time
+    import sqlalchemy as sa
+
+    retries = int(os.environ.get('DB_CONNECT_RETRIES', 12)) if retries is None else retries
+    delay = float(os.environ.get('DB_CONNECT_DELAY', 5)) if delay is None else delay
+
+    app.config.setdefault('SQLALCHEMY_ENGINE_OPTIONS', {}).setdefault('pool_pre_ping', True)
     db.init_app(app)
-    
-    # Create tables if they don't exist
+
     with app.app_context():
-        import sqlalchemy as sa
-        inspector = sa.inspect(db.engine)
-        if not inspector.has_table('diacritic_mappings') or not inspector.has_table('feedback'):
-            db.create_all()
-            logger.info("Created database tables")
-        else:
-            logger.info("Database tables already exist")
-            
+        for attempt in range(1, retries + 1):
+            try:
+                inspector = sa.inspect(db.engine)
+                if not inspector.has_table('diacritic_mappings') or not inspector.has_table('feedback'):
+                    db.create_all()
+                    logger.info("Created database tables")
+                else:
+                    logger.info("Database tables already exist")
+                return
+            except sa.exc.OperationalError as exc:
+                db.engine.dispose()
+                if attempt == retries:
+                    logger.error("Database still unreachable after %d attempts; starting without the "
+                                 "table check: %s", retries, exc.__class__.__name__)
+                    return
+                logger.warning("Database not reachable (attempt %d/%d), retrying in %.0fs",
+                               attempt, retries, delay)
+                time.sleep(delay)
+
 def get_db():
     """Get the database instance"""
     return db 
