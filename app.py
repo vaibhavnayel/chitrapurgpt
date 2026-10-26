@@ -10,6 +10,11 @@ from langchain_core.tools import tool
 from steps import respond_to_user_message
 from search_engine import search_knowledge_base
 import logging
+
+# Google sign-in on Render PR previews goes through the live site's callback (see preview_oauth.py).
+from chainlit.server import app as chainlit_server_app
+import preview_oauth
+preview_oauth.install(chainlit_server_app)
     
 @cl.oauth_callback
 def oauth_callback(
