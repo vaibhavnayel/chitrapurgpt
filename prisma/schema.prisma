@@ -124,3 +124,11 @@ enum StepType {
   undefined
   user_message
 }
+
+// Who may sign in (managed at /admin). Created and first filled from email_whitelist.txt by
+// access.py at startup, so it also exists on databases where this migration was never run.
+model AllowedUser {
+  email     String   @id
+  addedBy   String?
+  createdAt DateTime @default(now()) @db.Timestamptz(6)
+}

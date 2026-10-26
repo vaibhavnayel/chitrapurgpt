@@ -51,6 +51,16 @@ The chat interface will be available at `http://localhost:8000`
 - `ingest.py` - Knowledge base ingestion utilities
 - `knowledge_base.jsonl` - Processed document store
 - `documents/` - Raw document storage
+- `access.py` - Who may sign in (table `AllowedUser`, first filled from the `email_whitelist.txt` secret file) and who is an admin (`ADMIN_EMAILS` env var)
+- `admin.py` - Admin dashboard at `/admin`: add/remove people, read chats (read-only)
+- `preview_oauth.py`, `preview_idle.py` - Google sign-in and idle tracking on Render PR previews
+
+## Admin dashboard
+
+Admins (comma-separated emails in the `ADMIN_EMAILS` env var) sign in normally, then open `/admin`.
+Removing someone only stops them signing in; their chats are kept. Tests:
+`TEST_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_test python tests/test_admin.py`
+(throwaway local database, it gets wiped) and `python tests/test_preview_idle.py`.
 
 ## Deployment
 
