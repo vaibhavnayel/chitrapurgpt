@@ -13,7 +13,7 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from chainlit.auth import get_token_from_cookies
 from chainlit.auth.jwt import decode_jwt
@@ -169,6 +169,13 @@ def _back_to_dashboard(message: str, kind: str = "ok") -> RedirectResponse:
 
 
 # ---------- pages ----------
+
+@router.get("/admin/me")
+async def me(request: Request):
+    """Used by public/admin-button.js to show the Admin button in the chat page to admins only."""
+    return JSONResponse({"admin": access.is_admin(_signed_in_email(request))},
+                        headers={"Cache-Control": "no-store"})
+
 
 @router.get("/admin/")
 async def dashboard_slash():

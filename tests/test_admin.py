@@ -134,6 +134,7 @@ async def main():
         assert r.status_code == 401
         r = await anon.get("/admin/")
         assert r.status_code == 307 and r.headers["location"] == "/admin"
+        assert (await anon.get("/admin/me")).json() == {"admin": False}
 
     async with httpx.AsyncClient(transport=transport, base_url="https://chitrapurgpt.onrender.com",
                                  cookies={"access_token": jwt_for("alice@gmail.com")}) as alice:
@@ -142,6 +143,7 @@ async def main():
             assert r.status_code == 403 and "Admins only" in r.text, path
         r = await alice.post("/admin/allow", data={"email": "x@gmail.com"})
         assert r.status_code == 403
+        assert (await alice.get("/admin/me")).json() == {"admin": False}
 
     from chainlit.auth.jwt import get_jwt_secret  # noqa: F401  (forged cookie: wrong secret)
     os.environ["CHAINLIT_AUTH_SECRET"] = "y" * 64
@@ -153,6 +155,7 @@ async def main():
 
     async with httpx.AsyncClient(transport=transport, base_url="https://chitrapurgpt.onrender.com",
                                  cookies={"access_token": jwt_for("admin@gmail.com")}) as admin:
+        assert (await admin.get("/admin/me")).json() == {"admin": True}  # shows the Admin button
         r = await admin.get("/admin")
         assert r.status_code == 200
         assert "You are looking at LIVE data" in r.text
