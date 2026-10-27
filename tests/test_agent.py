@@ -173,6 +173,20 @@ def test_reader_failure_skips_the_doc(monkeypatch):
     assert [d.metadata["title"] for d in kept] == ["Shri Chitrapur Rathotsava"]
 
 
+def test_query_writer_failure_falls_back_to_the_question(monkeypatch):
+    def truncated(messages):
+        raise ValueError("Failed to parse Queries from completion {\"reasoning\": \"...\"}")
+
+    monkeypatch.setattr(steps, "query_llm", lambda: FakeStructured(truncated))
+
+    async def run():
+        chainlit_context()
+        return await steps.search_knowledge_base.ainvoke({"research_query": "Kojagiri"})
+
+    out = asyncio.run(run())
+    assert "0. Kojagiri\n" in out, "the search still ran, with the research query as the only query"
+
+
 def test_global_reader_cap_across_parallel_searches(monkeypatch):
     monkeypatch.setattr(steps.models, "READER_CONCURRENCY", 3)
     steps._reader_semaphores.clear()

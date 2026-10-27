@@ -100,7 +100,12 @@ async def generate_search_queries(research_instructions: str) -> list[str]:
         SystemMessage(content=QUERY_PROMPT),
         HumanMessage(content=f"here is the question: {research_instructions}"),
     ]
-    response = await query_llm().ainvoke(messages)
+    try:
+        response = await query_llm().ainvoke(messages)
+    except Exception:  # noqa: BLE001  (e.g. a truncated structured reply, even after retries)
+        # Search with the question itself rather than failing the user's turn.
+        logger.exception("query writer failed; searching with the research query itself")
+        return [research_instructions]
     logger.info(" generated queries: %s", response.queries)
     return response.queries
 
@@ -133,7 +138,7 @@ def reader_semaphore() -> asyncio.Semaphore:
 
 
 def query_llm():
-    return models.query_llm().with_structured_output(Queries, method="json_schema")
+    return models.query_llm().with_structured_output(Queries, method="json_schema").with_retry()
 
 
 def reader_llm():
