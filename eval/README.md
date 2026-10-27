@@ -71,6 +71,10 @@ for faithfulness and quality scores (1-5) and a winner. Its cost goes to the spe
 `check_openai.py` makes one one-word embeddings call to check the embeddings endpoint can serve requests (it
 honours `OPENAI_BASE_URL`).
 
+`--modes answer=quick` sends the chat composer's Quick answer mode with every message (the default is Detailed,
+as in the app). Records note the modes sent (`modes_sent`, `stack.modes`) and the mode each answer was saved with
+(`turns[].answer_mode`).
+
 `--no-vector` runs with fuzzy retrieval only, for when the embeddings endpoint is unreachable. Such runs are marked
 `no-vector-retrieval` in `stack.eval_shims` and aren't comparable with full runs.
 
