@@ -36,11 +36,6 @@ async def fake_respond(history, message):
     return messages
 
 
-steps = types.ModuleType("steps")
-steps.respond = fake_respond
-steps.history_before = lambda messages, message_id: list(messages)
-steps.COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
-sys.modules["steps"] = steps
 said = []
 
 
@@ -49,6 +44,14 @@ async def said_append(content):
 
 
 async def main():
+    # Stub the LLM stack here, not at import time: pytest imports this file while collecting tests, and a
+    # module-level stub would replace `steps` for every other test.
+    steps = types.ModuleType("steps")
+    steps.respond = fake_respond
+    steps.history_before = lambda messages, message_id: list(messages)
+    steps.COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
+    steps.ANSWER_FAILED = {"cgpt_kind": "answer_failed"}
+    sys.modules["steps"] = steps
     os.chdir(tempfile.mkdtemp())  # Chainlit writes its default config files into the working directory
     import app
 

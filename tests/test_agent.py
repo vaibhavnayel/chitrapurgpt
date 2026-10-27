@@ -376,6 +376,7 @@ def test_history_from_thread_skips_commands_errors_and_notes():
         step("a6", "assistant_message", "Here is the translation…"),
         step("u6", "user_message", "And this?"),
         step("a7", "assistant_message", "rate limit exceeded", isError=True),
+        step("a8", "assistant_message", "Sorry, something went wrong…", metadata=steps.ANSWER_FAILED),
         step("u7", "user_message", ""),
         step("u8", "user_message", "   "),  # empty, no saved file: dropped (the API rejects empty text)
         elements=[{"forId": "u5", "name": "note.pdf", "mime": "application/pdf"},

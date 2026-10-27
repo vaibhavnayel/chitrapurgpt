@@ -99,6 +99,6 @@ async def on_message(message: cl.Message):
             # Only a finished turn is kept, so a failure half-way (e.g. an AI service is down) can't leave a
             # half-finished tool call in the history and break every later message in this chat.
             logging.exception("Couldn't answer the message")
-            await cl.Message(content=ANSWER_FAILED_MESSAGE).send()
+            await cl.Message(content=ANSWER_FAILED_MESSAGE, metadata=dict(steps.ANSWER_FAILED)).send()
             return
         cl.user_session.set("messages", new_history)

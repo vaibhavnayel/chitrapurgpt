@@ -57,6 +57,10 @@ Changes beyond the PARITY decisions, all found by measuring the new stack and li
   returned truncated structured output there).
 - **11:** thinking effort by model family (Sonnet `xhigh`, Opus `high`); readers think at `xhigh`. Vaibhav's choice.
 - **13.1:** `ArticleBoundaries.scratchpad` renamed `notes` (Sonnet 5.5 refuses schemas with a `scratchpad` field).
+- **3.6 / 5.5:** upstream (`main`, df9f07c) added a friendly "something went wrong, please try again" message when
+  an answer fails, instead of Chainlit's raw error. It's kept on the new stack, marked in step metadata
+  (`cgpt_kind: answer_failed`) so a reopened chat doesn't replay it to the agent. Its test, `tests/test_on_message.py`,
+  was adapted to the new `steps.respond` API.
 
 Outcomes on the full eval and the E2E are in `docs/AGENT_DESIGN.md` §13.
 

@@ -41,6 +41,7 @@ retriever = HybridRetriever(fuzzy_retriever=fuzzy_retriever, vector_db_retriever
 # (step metadata is saved to the database; tags and commands aren't).
 COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
 UPLOAD_NOTE = {"cgpt_kind": "upload_note"}
+ANSWER_FAILED = {"cgpt_kind": "answer_failed"}  # app.py's "something went wrong, try again" notice
 
 SYSTEM_PROMPT = """
 You are a helpful research assistant who can answer questions about the chitrapur saraswat religious community by thoroughly studying magazine articles in your knowledge base.
@@ -410,7 +411,7 @@ def history_from_thread(thread: dict) -> list[BaseMessage]:
                 continue  # e.g. an attachment-only message whose file record is gone: the API rejects empty text
             history.append(HumanMessage(content=output, id=step.get("id")))
         elif step.get("type") == "assistant_message":
-            if step.get("isError") or kind == UPLOAD_NOTE["cgpt_kind"]:
+            if step.get("isError") or kind in (UPLOAD_NOTE["cgpt_kind"], ANSWER_FAILED["cgpt_kind"]):
                 continue
             if kind == COMMAND_OUTPUT["cgpt_kind"] or _COMMAND_OUTPUT_SHAPE.match(output) or not output.strip():
                 if history and isinstance(history[-1], HumanMessage):
