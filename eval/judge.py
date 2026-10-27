@@ -99,7 +99,12 @@ def evidence(rec: dict, turn_index: int, answer: str) -> str:
             break
         out.append(block)
         total += len(block)
-    return "\n".join(out) if out else "(no knowledge-base search was made)"
+    if out:
+        return "\n".join(out)
+    searches = sum(len(t.get("tool_calls") or []) for t in rec["turns"][: turn_index + 1])
+    if searches:
+        return f"(the knowledge base was searched {searches} time(s); no relevant passages were found)"
+    return "(no knowledge-base search was made)"
 
 
 def conversation(rec: dict) -> str:
