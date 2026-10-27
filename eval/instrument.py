@@ -78,6 +78,9 @@ def _structured_schema_name(kwargs: dict, metadata: dict | None) -> str | None:
         name = choice.get("name") or (choice.get("function") or {}).get("name")
         if name:
             return name
+    out_fmt = ((params.get("output_config") or {}).get("format") or {})  # Anthropic native structured output
+    if isinstance(out_fmt, dict) and isinstance(out_fmt.get("schema"), dict) and out_fmt["schema"].get("title"):
+        return out_fmt["schema"]["title"]
     fmt = params.get("response_format")
     if isinstance(fmt, dict):
         return (fmt.get("json_schema") or {}).get("name")

@@ -31,14 +31,30 @@ import traceback
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-HERE = ROOT / "eval"
+REPO = Path(__file__).resolve().parents[1]
+HERE = REPO / "eval"
+START_DIR = Path.cwd()  # relative --out/--questions paths are relative to where the harness was started
+
+
+def _app_dir() -> Path:
+    """--app-dir runs another checkout of the app (e.g. the old stack exported with `git archive`) while questions,
+    results and the spend ledger stay in this repo. Read before argparse because it decides what gets imported."""
+    if "--app-dir" in sys.argv:
+        return Path(sys.argv[sys.argv.index("--app-dir") + 1]).resolve()
+    return REPO
+
+
+ROOT = _app_dir()
 sys.path[:0] = [str(HERE), str(ROOT)]
+if "--site" in sys.argv:
+    # --site DIR: packages that shadow the venv's (e.g. the old stack's exact dependency set, installed with
+    # `uv pip install --target DIR`), so two stacks can be measured from one venv.
+    sys.path.insert(0, str(Path(sys.argv[sys.argv.index("--site") + 1]).resolve()))
 os.chdir(ROOT)  # Chainlit reads .chainlit/config.toml and the app reads knowledge_base.jsonl from here
 
 import dotenv  # noqa: E402
 
-dotenv.load_dotenv(ROOT / ".env")
+dotenv.load_dotenv(REPO / ".env")
 for _var in ("DATABASE_URL", "LITERAL_API_KEY", "BUCKET_NAME"):  # never let an eval touch a real DB or bucket
     os.environ.pop(_var, None)
 # app.py registers @cl.oauth_callback, which Chainlit refuses without a provider configured. The eval never signs
@@ -51,59 +67,9 @@ from instrument import Collector, RecordingEmitter, collecting, steps_from_event
 from pricing import EMBEDDING_PRICES  # noqa: E402
 
 
-def _route_pinecone_through_env_proxy() -> None:
-    """Local sandboxes reach the internet only through HTTPS_PROXY. Every other client here (httpx, requests)
-    honours it, but the Pinecone SDK uses its own urllib3 pool and only takes an explicit proxy_url, so pass
-    it one. Eval-only: production has direct egress and never imports this file."""
-    proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if not proxy:
-        return
-    from urllib.parse import unquote, urlsplit
+import sandbox_shims  # noqa: E402
 
-    import pinecone
-    import urllib3
-
-    parts = urlsplit(proxy)
-    bare = f"{parts.scheme}://{parts.hostname}:{parts.port}"
-    headers = (urllib3.make_headers(proxy_basic_auth=f"{unquote(parts.username)}:{unquote(parts.password or '')}")
-               if parts.username else None)
-    original_init = pinecone.Pinecone.__init__
-
-    def init_with_proxy(self, *args, **kwargs):
-        kwargs.setdefault("proxy_url", bare)
-        if headers:
-            kwargs.setdefault("proxy_headers", headers)
-        original_init(self, *args, **kwargs)
-
-    pinecone.Pinecone.__init__ = init_with_proxy
-    EVAL_SHIMS.append("pinecone-env-proxy")
-
-
-def _embed_without_local_tokenizer_if_unavailable() -> None:
-    """OpenAIEmbeddings tokenizes queries locally with tiktoken (to split texts over 8191 tokens) and tiktoken
-    downloads its vocabulary on first use. Where that download is blocked, send the query text instead: the
-    API tokenizes it with the same cl100k vocabulary, so a short query gets the same embedding."""
-    try:
-        import tiktoken
-        tiktoken.get_encoding("cl100k_base")
-        return
-    except Exception:  # noqa: BLE001
-        pass
-    from langchain_openai import OpenAIEmbeddings
-
-    original_init = OpenAIEmbeddings.__init__
-
-    def init_without_tokenizer(self, *args, **kwargs):
-        kwargs.setdefault("check_embedding_ctx_length", False)
-        original_init(self, *args, **kwargs)
-
-    OpenAIEmbeddings.__init__ = init_without_tokenizer
-    EVAL_SHIMS.append("embeddings-no-local-tiktoken")
-
-
-EVAL_SHIMS: list[str] = []
-_route_pinecone_through_env_proxy()
-_embed_without_local_tokenizer_if_unavailable()
+EVAL_SHIMS = sandbox_shims.apply()  # no-ops outside a proxy-only sandbox
 
 LEDGER = HERE / "results" / "spend_ledger.local.jsonl"
 PACKAGES = ["chainlit", "langchain", "langchain-core", "langchain-anthropic", "langchain-openai", "langgraph",
@@ -126,10 +92,12 @@ def stack_info(label: str) -> dict:
             versions[p] = md.version(p)
         except md.PackageNotFoundError:
             pass
+    exported = ROOT / "COMMIT"  # written next to a `git archive` export
     return {
         "label": label,
-        "git_commit": git("rev-parse", "--short", "HEAD"),
-        "git_dirty": bool(git("status", "--porcelain", "--untracked-files=no")),
+        "app_dir": None if ROOT == REPO else str(ROOT),
+        "git_commit": exported.read_text().strip() if exported.exists() else git("rev-parse", "--short", "HEAD"),
+        "git_dirty": False if exported.exists() else bool(git("status", "--porcelain", "--untracked-files=no")),
         "python": sys.version.split()[0],
         "packages": versions,
         "model_env": {k: v for k, v in os.environ.items() if k.startswith("CGPT_")},
@@ -325,7 +293,7 @@ def make_elements(files: list[dict], tmpdir: Path) -> list:
     from chainlit.element import Element
     elements = []
     for f in files:
-        src = ROOT / f["path"]
+        src = REPO / f["path"]
         eid = str(uuid.uuid4())
         dst = tmpdir / eid
         shutil.copyfile(src, dst)
@@ -442,7 +410,11 @@ async def main() -> None:
     ap.add_argument("--timeout-s", type=float, default=900)
     ap.add_argument("--append", action="store_true")
     ap.add_argument("--exclude-done", action="store_true", help="skip ids already in --out (resume a run)")
+    ap.add_argument("--app-dir", help="directory of the app checkout to run (default: this repo)")
+    ap.add_argument("--site", help="extra package directory searched before the venv's site-packages")
     args = ap.parse_args()
+    args.out = str(START_DIR / args.out)
+    args.questions = str(START_DIR / args.questions)
 
     questions = load_questions(args)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
