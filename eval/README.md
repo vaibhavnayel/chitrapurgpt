@@ -49,13 +49,27 @@ variables because Chainlit refuses to register `@cl.oauth_callback` without them
 .venv/bin/python eval/langsmith_traces.py --label baseline   # trace shape in the dev LangSmith project
 ```
 
-Run with `--concurrency 1` (the default) when latency matters. The current stack's retrieval blocks the event loop,
+Run with `--concurrency 1` (the default) when latency matters. The old stack's retrieval blocks the event loop,
 so concurrent questions distort each other's timings.
+
+**Measuring the old stack.** The pre-Deep-Agents code and its exact dependency set can be run by the same harness
+from the same venv:
+```sh
+git archive 7a090ba | tar -x -C .cache/oldstack && echo 7a090ba > .cache/oldstack/COMMIT
+uv pip install -p .venv --target .cache/olddeps -r <old freeze>     # old package versions, outside the venv
+.venv/bin/python eval/run_eval.py --label baseline --app-dir .cache/oldstack --site .cache/olddeps ...
+```
+
+**Blind pairwise judge.** `judge.py A B --out ...` shows `claude-opus-5-5` each question with both answers in
+random order, each next to the passages its own stack retrieved (cited ones first, 24k chars per side), and asks
+for faithfulness and quality scores (1-5) and a winner. Its cost goes to the spend ledger.
+
+`check_openai.py` makes one one-word embeddings call to check the OpenAI account can serve requests.
 
 ## Environment shims (sandbox only)
 
-`run_eval.py` applies two shims when the environment needs them, and lists them in each record's
-`stack.eval_shims`:
+`sandbox_shims.py` (used by `run_eval.py` and the E2E server) applies two shims when the environment needs them;
+they're listed in each record's `stack.eval_shims`:
 - `pinecone-env-proxy`: the Pinecone SDK ignores `HTTPS_PROXY`; where egress must go through a proxy, the harness
   passes it to `Pinecone(...)` explicitly.
 - `embeddings-no-local-tiktoken`: where tiktoken can't download its vocabulary, `OpenAIEmbeddings` sends query text
