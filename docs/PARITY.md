@@ -13,15 +13,38 @@ stack (`eval/`, baseline in `eval/results/baseline.local.jsonl`).
 
 **How it's tested**
 - **eval**: the harness in `eval/` (`run_eval.py` + `report.py`), run against the baseline and the new stack.
-- **unit**: an offline pytest to add in Phase B (no network). Fixtures are built from the current code where possible.
+- **unit**: an offline pytest (no network, fake models), in `tests/test_agent.py`, `tests/test_uploads.py` and
+  `tests/test_ingest.py`.
 - **existing**: the tests already in `tests/`.
 - **manual**: on the Render PR preview.
 
-Current test status (2026-10-27, before any change):
-- `pytest tests/` passes (7 tests).
-- `tests/test_preview_idle.py` and `tests/test_preview_oauth.py` pass.
-- `tests/test_admin.py` could **not** run in this sandbox: Postgres needs System V shared memory (`shmget`), which
-  the sandbox denies. It needs re-running wherever a local Postgres can start.
+Test status before any change (Phase A): `pytest tests/` passes (7 tests), `tests/test_preview_idle.py` and
+`tests/test_preview_oauth.py` pass. `tests/test_admin.py` couldn't run in the Phase A sandbox (no Postgres); in
+Phase B it runs against a local Postgres and passes, before and after the change.
+
+## Phase B: where each item is tested now
+
+Approved: fixes 1, 2, 3, 4, 5, 7, 8 and 9; kept as before: 6 (dedupe key) and 10 (full article text in the
+"document analysis" step).
+
+| Items | Covered by |
+|---|---|
+| 1 system prompt, 12 date | `tests/test_agent.py::test_one_tool_our_prompt_todays_date_and_steps`: the model sees exactly `steps.system_prompt(today)` and the date changes between turns on different days. Eval: citation checks. |
+| 2 final answer, streaming | `test_extractor_streams_exactly_what_the_regex_shows`: 7 cases × 30 random chunkings each, including split tags, missing tags, a tag mentioned in the reasoning, two answers and an unclosed tag. Also `test_answer_stream_saved_equals_displayed`, `test_thinking_blocks_never_shown`. E2E: "displayed == final message", "saved message == displayed". Eval: `streamed_equals_saved`, time to first visible text. |
+| 3.1, 3.2 memory (answer stored once) | `test_one_tool_our_prompt_todays_date_and_steps` (history = human, ai, tool, tool, ai, human, ai; tool results reach the next turn) |
+| 3.3, 3.4 resume | `test_history_from_thread_skips_commands_errors_and_notes`, `test_resume_then_continue`; E2E "thread resumed", "agent remembers after resume" |
+| 3.6 stuck chat | `test_mid_turn_failure_keeps_the_chat_usable` (the model fails mid tool loop; the half-streamed answer is removed, history keeps only finished turns, the next turn works) |
+| 4 search tool | `test_search_tool_output_and_shared_docs_untouched` (output byte-identical to `retrievers.format_docs`; shared docs untouched), `test_reader_failure_skips_the_doc`, `test_global_reader_cap_across_parallel_searches`; eval per-search metrics and `kb_docs_mutated` |
+| 5 steps, `/admin` | `test_one_tool_our_prompt_todays_date_and_steps` (two parallel searches → two engine steps, each with "search query generator" then "document analysis"); E2E "steps persisted with names and nesting", "/admin renders the new-stack thread"; `tests/test_admin.py` |
+| 6 LangSmith | `eval/langsmith_traces.py --label <run>`: one root per turn, "ChitrapurGPT turn" |
+| 7 commands | `test_commands_unchanged_and_marked`; E2E "Exact Search unchanged", "Fuzzy Search unchanged"; `tests/test_search_engine*.py` |
+| 8 gating | `tests/test_admin.py` (unchanged; its `steps` stub still works because `app.py` uses `steps.x` at call time) |
+| 9 edit | `test_edit_truncates_history`; E2E "edit truncates history" |
+| 10 reader failures | `test_reader_failure_skips_the_doc` |
+| 11 sampling | `models.py`; eval comparison of effort `low` vs `medium` (see `docs/AGENT_DESIGN.md` §13) |
+| 13 ingest | `tests/test_ingest.py` (offline, temp dir, upsert stubbed), `tests/ingest_live_check.py` |
+| 16 uploads | `tests/test_uploads.py` (each type, oversize, unsupported, damaged, missing, caps); E2E "PDF upload used", "image upload used"; eval `edge-upload-*` |
+| safety cap (new) | `test_model_call_cap_gives_a_friendly_answer` |
 
 ---
 

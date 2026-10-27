@@ -1,15 +1,16 @@
 # Agent design: ChitrapurGPT on LangChain Deep Agents
 
-Status: **proposal (Phase A)**. No app code has changed yet. Parity requirements are in `docs/PARITY.md`. The
-baseline numbers come from `eval/results/baseline.local.jsonl` (current stack, measured 2026-10-27 with the harness
-in `eval/`).
+Status: **as built (Phase B)**. Code: `steps.py` (agent, tool, streaming, history), `models.py` (model settings),
+`uploads.py` (attachments), `app.py` (Chainlit handlers), `ingest.py`. Parity requirements and every behaviour change
+are in `docs/PARITY.md`. Old-vs-new measurements: §13 below; full report in `eval/REPORT.local.md` (local only).
 
-APIs below were checked against source, not memory:
-- deepagents 0.7.32 (latest on PyPI, cloned from GitHub)
-- langchain 1.4.7, langchain-core 1.7.0, langgraph 1.2.18, langgraph-prebuilt 1.1.0, langchain-anthropic 1.7.6 (the
-  versions deepagents' `uv.lock` resolves to)
-- Chainlit 2.9.6 (installed)
+APIs below were checked against the installed source:
+- deepagents 0.7.32
+- langchain 1.4.7, langchain-core 1.7.0, langgraph 1.2.18, langgraph-prebuilt 1.1.1, langchain-anthropic 1.7.6
+- Chainlit 2.9.6
 - the Anthropic models API for `claude-sonnet-5-5` / `claude-haiku-5-5` capabilities
+
+Where the build differs from the Phase A proposal, the text says so ("Built:").
 
 File references are given as `pkg:path:line`.
 
@@ -107,6 +108,13 @@ agent = create_deep_agent(
 )
 ```
 
+Built: `steps.build_agent(model=None, tools=None, model_call_limit=15)`. The profile is registered under the key
+deepagents derives from the model instance, `"{ls_provider}:{model}"`, so it also applies to the fake models in the
+unit tests and to whatever `CGPT_MAIN_MODEL` is. When the cap stops a turn, the middleware's "Model call limits
+exceeded" text is replaced with a friendly sorry-message (`steps.OUT_OF_STEPS`). The eval never came near the cap.
+A unit test asserts the model is bound to exactly one tool, `search_knowledge_base`, and sees exactly
+`system_prompt(today)`.
+
 Result: the model sees exactly one tool and exactly our system prompt. No deepagents base prompt is added for
 unprofiled models (`graph.py:363-382`; built-in profiles exist only for `claude-sonnet-4-6`, `claude-haiku-4-5`,
 `claude-opus-4-7`).
@@ -125,15 +133,24 @@ unprofiled models (`graph.py:363-382`; built-in profiles exist only for `claude-
 | `CGPT_QUERY_MODEL` | `$CGPT_MAIN_MODEL` | query writer |
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | per-doc readers |
 | `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
-| `CGPT_MAIN_EFFORT` | `medium` | Sonnet 5.5 adaptive-thinking effort (`low/medium/high/xhigh/max`) |
+| `CGPT_MAIN_EFFORT` | chosen by the eval (§13) | Sonnet 5.5 adaptive-thinking effort (`low/medium/high/xhigh/max`) |
 | `CGPT_READER_CONCURRENCY` | `40` | global cap on concurrent reader calls (same number as today's per-search cap) |
+
+Built: all of these live in `models.py`, with `chat_model(model, max_tokens, effort, thinking)` choosing the right
+sampling settings per model family. Production needs no new env vars.
 
 OpenAI stays only for `text-embedding-3-large` (the Pinecone index). Readers move from gpt-5-mini to Haiku 5.5, so
 chat LLMs are Anthropic-only.
 
 **Sampling and thinking (PARITY 11).** `temperature=0` can't be kept on the main model. langchain-anthropic 1.7.6
 raises `ValueError` for `claude-sonnet-5-5` when `temperature` ≠ 1, `top_k` is set, `top_p` ≠ 1, or `thinking` is
-`disabled`/`enabled` (`chat_models.py:1810-1846`). The models API agrees: adaptive thinking only. So:
+`disabled`/`enabled` (`chat_models.py:1810-1846`). The models API agrees: adaptive thinking only.
+
+Built, also: **Haiku 5.5 rejects `temperature` too.** The API returns 400 "`temperature` is deprecated for this
+model", which the proposal didn't anticipate. So `temperature=0` is now set only for Claude 4.x and older (if
+someone points an env var at one); 5.x models get thinking settings instead.
+
+The plan:
 - Main agent: `ChatAnthropic(model=…, effort=CGPT_MAIN_EFFORT, max_tokens=16000)`.
   - No temperature.
   - `max_tokens` doubles from 8,000 because thinking tokens count against it. The visible answer budget stays at
@@ -144,9 +161,15 @@ raises `ValueError` for `claude-sonnet-5-5` when `temperature` ≠ 1, `top_k` is
     answers degrade.
 - Query writer on Sonnet 5.5: forced `tool_choice` is rejected (`chat_models.py:1155-1159`), so use
   `with_structured_output(Queries, method="json_schema")` (native structured outputs; supported per the models API).
+  Built: with `effort="low"` (writing a few short queries needs little thought, and it keeps each search fast).
 - Readers on Haiku 5.5: thinking disabled (supported), no temperature, `max_tokens=8000`,
-  `with_structured_output(RelevantPassages, method="json_schema")`, `.with_retry()` as today,
-  `.with_config(tags=["nostream"])` so their tokens never enter the UI stream.
+  `with_structured_output(RelevantPassages, method="json_schema")`, `.with_retry()` as today.
+- Built: both the query writer and the readers are created with `disable_streaming=True, tags=["nostream"]`.
+  LangGraph's message streaming would otherwise make every chat model in the graph stream internally, readers
+  included, and the tag keeps their tokens out of the UI stream.
+- Checked against the real models: `Queries` and `RelevantPassages` (both with a `reasoning` field) parse fine with
+  native structured output on Sonnet 5.5 and Haiku 5.5. A field named `scratchpad` makes Sonnet 5.5 stop with
+  `stop_reason="refusal"` and no output (see §9).
 
 ## 5. The tool, step by step (parity with `steps.py`)
 
@@ -207,6 +230,16 @@ async def on_message(message):
     cl.user_session.set("messages", state["messages"])       # appended once (fixes PARITY 3.2)
 ```
 
+Built: the turn lives in `steps.respond(history, message)`, so `app.on_message` is three lines:
+1. `history = steps.history_before(...)`
+2. `new_history = await steps.respond(history, message)`
+3. `cl.user_session.set("messages", new_history)`
+
+The session is only updated once the turn has finished. If the turn raises, a half-streamed answer is removed from
+the screen (it was never saved), Chainlit shows the error, and history stays at the previous turn. That's the fix
+for the "stuck chat" bug, tested with a model failure in the middle of a tool loop. Upload notes, if any, are sent
+before the answer.
+
 ### 6.2 Streaming only the final answer
 
 `stream_mode="messages"` yields `(AIMessageChunk, metadata)` for every chat-model call in the graph. The metadata
@@ -255,7 +288,10 @@ the recording emitter and checks the trees (PARITY 5.2). No step is created for 
 - **Resume:** rebuild from `user_message`/`assistant_message` steps as today, setting `HumanMessage(id=step["id"])`.
   Skip `isError` steps and Exact/Fuzzy Search pairs (PARITY 3.4). New command output carries
   `metadata={"cgpt_kind": "command_output"}` (step metadata is persisted, tags aren't); old threads are recognised by
-  the command output's shape.
+  the command output's shape. Built (`steps.history_from_thread`), also skipping:
+  - empty assistant outputs (a command with no matches), together with the command before them;
+  - upload notes;
+  - user messages that would be empty (the API rejects empty text).
 - **Edits (PARITY 9):** Chainlit re-runs `on_message` with the edited message's original id.
   `history_before(messages, id)` cuts the list just before the HumanMessage with that id, so the agent sees what the
   user sees.
@@ -267,8 +303,9 @@ The UI accepts any file (20 max, 500 MB each). Production so far: jpeg, png, pdf
 
 | Type (by MIME, then extension, then magic bytes via `filetype`, already a Chainlit dependency) | Sent as | Cap |
 |---|---|---|
-| jpeg, png, gif, webp | `{"type": "image", "base64", "mime_type"}` (langchain standard block → Anthropic image) | Resized to ≤ 1568 px long edge with Pillow, which is what the API would do anyway, so no quality loss; keeps requests small. Reject > 25 MB originals. Max 10 images per message. |
-| PDF | `{"type": "file", "base64", "mime_type": "application/pdf"}` → Anthropic document block (text + page images) | ≤ 100 pages and ≤ 20 MB. Bigger files go as extracted text via `pypdf` (already installed). |
+| jpeg, png, gif, webp | `{"type": "image", "base64", "mime_type"}` (langchain standard block → Anthropic image) | Resized to ≤ 1568 px long edge with Pillow, which is what the API would do anyway, so no quality loss; keeps requests small. Max 10 images per message. |
+| PDF | `{"type": "file", "base64", "mime_type": "application/pdf", "extras": {"title": name}}` → Anthropic document block (text + page images) | Built: native if ≤ 100 pages and ≤ 10 MB, and ≤ 15 MB of native PDFs per message (to stay well under the 32 MB request limit); otherwise extracted text via `pypdf`, with a note to the user. Password-protected PDFs get a note. |
+| any file over 50 MB | not read; note to agent and user | n/a |
 | xlsx | text: per sheet, `## Sheet <name>` + rows as CSV (`openpyxl`, read-only, values only) | 100k chars per file, 200k per message, with a "(truncated)" note |
 | docx | text from `word/document.xml` (stdlib `zipfile`), paragraphs + table cells | same |
 | csv, txt, md, json, html/xml, and octet-stream that decodes as UTF-8 | text | same |
@@ -301,10 +338,21 @@ model/tools structure, and to lose the "No indexed run ID" tracer warnings the c
 
 ## 9. `ingest.py`
 
-Only the model changes: `ChatAnthropic(model=CGPT_INGEST_MODEL, max_tokens=32000)` (no temperature on Sonnet 5.5),
-`.with_structured_output(ArticleBoundaries, method="json_schema", include_raw=True).with_retry()`, same prompt and
-schema. The cost print switches to `usage_metadata`. Tested on a short sample text into a temp dir, with
-`add_to_vector_store` stubbed (no Pinecone writes, `knowledge_base.jsonl` untouched).
+Only the model changes: `models.chat_model(CGPT_INGEST_MODEL, max_tokens=20000)` (no temperature on Sonnet 5.5;
+20,000 stays under the Anthropic SDK's limit for a non-streaming call),
+`.with_structured_output(ArticleBoundaries, method="json_schema", include_raw=True).with_retry()`, same prompt. The
+cost print switches to `usage_metadata`.
+
+Built, one forced schema change: Sonnet 5.5 returns `stop_reason="refusal"` with no output whenever the structured
+output schema has a field named **`scratchpad`**. The original `ArticleBoundaries` has one, described as "space for
+thinking and reasoning". This was isolated with probes: the same schema without the field, or with it renamed,
+works; keeping the name with a neutral description still refuses. The field is now `notes`. Nothing reads it, and the
+article boundaries themselves are unchanged.
+
+Tests: `tests/test_ingest.py` is offline (a fake model; `main()` runs in a temp dir with `add_to_vector_store`
+stubbed, and the real `knowledge_base.jsonl` is hash-checked as untouched). `tests/ingest_live_check.py` runs the
+real model on a short two-article sample (about $0.01; it extracted cover, contents, editorial and the Rathotsava
+article with the right author and dates).
 
 ## 10. Dependencies (Phase B)
 
@@ -317,17 +365,28 @@ deepagents 0.7.32 needs:
 
 So these pins move together:
 
-| package | now | Phase B (exact pins, to be confirmed by a clean `pip install -r` on 3.12) |
+| package | before | built (exact pins in `requirements.txt`) |
 |---|---|---|
 | deepagents | n/a | 0.7.32 |
-| langchain | 1.0.2 | 1.4.7 (pulls langgraph 1.2.x) |
-| langchain-core | 1.6.10 (transitive) | 1.7.x |
+| langchain | 1.0.2 | 1.4.7 |
+| langchain-core | 1.6.10 (transitive) | 1.7.0 (pinned) |
+| langgraph | 1.0.10 (transitive) | 1.2.18 (pinned) |
 | langchain-anthropic | 1.0.0 | 1.7.6 |
+| anthropic | transitive | 0.125.0 (pinned) |
 | langchain-openai | 1.0.1 | 1.7.3 (embeddings only) |
+| openai | transitive | 2.54.0 (pinned; see below) |
 | langchain-community | 0.4.1 | 0.4.2 (`ingest.py`'s PDF loader) |
 | langchain-google-genai | 3.0.0 | 4.4.2 |
-| langsmith | 0.4.38 | ≥ 0.14.12 |
-| pillow, openpyxl | n/a | new |
+| langsmith | 0.4.38 | 0.14.12 |
+| pillow, openpyxl | n/a | 13.0.0, 3.1.5 |
+
+Built:
+- `uv pip compile requirements.txt --python-version 3.12` resolves cleanly, and the dev venv was synced to that
+  resolution, so the tests ran against what a fresh install gets.
+- `openai` is pinned to 2.54.0 because a fresh resolve picks 3.x. That moves to `httpx2` + `truststore`, which
+  verifies TLS through the OS trust store; it failed in the sandbox (`OSStatus -26276`) where 2.x worked. Pinning the
+  tested version keeps the embeddings client as it was. Moving to 3.x later is a one-line change worth a separate
+  test on Render.
 
 - Chainlit stays at 2.9.6: it doesn't pin langchain (only in its `tests` extra).
 - `langchain-groq` and `rank_bm25` are unused. They're left alone unless they block the resolve.
