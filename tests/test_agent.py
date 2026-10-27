@@ -112,6 +112,27 @@ def test_extractor_streams_exactly_what_the_regex_shows(text):
             assert expected.startswith(streamed) or "<final_answer>" in text  # unclosed: partial stream, replaced at the end
 
 
+def test_sources_written_after_the_closing_tag_are_kept():
+    text = ("Draft.\n<final_answer>\nIt was revived in 1973 [1].\n</final_answer>\n\nsources:\n"
+            "[1] The Revival of Rathotsava, Sunbeam-1973-April.txt page 6-13\n")
+    assert steps.final_answer_text(text) == ("\nIt was revived in 1973 [1].\n\nsources:\n"
+                                             "[1] The Revival of Rathotsava, Sunbeam-1973-April.txt page 6-13\n")
+    inside = "<final_answer>A [1]\n\nsources:\n[1] T, D.txt page 1-2\n</final_answer>\nsources:\n[1] X, Y.txt page 3-4"
+    assert steps.final_answer_text(inside) == "A [1]\n\nsources:\n[1] T, D.txt page 1-2\n", "sources inside win"
+    assert steps.final_answer_text("<final_answer>A</final_answer> trailing words") == "A"
+
+    async def run():
+        events = chainlit_context()
+        stream = steps.AnswerStream()
+        await stream.feed(AIMessage(content=text, id="c1"))
+        await stream.finish(steps.final_answer_text(text))
+        (msg,) = [s for s in steps_from_events(events).values() if s.get("type") == "assistant_message"]
+        return msg
+
+    msg = asyncio.run(run())
+    assert msg["output"].endswith("page 6-13\n") and msg["output"].startswith(msg["streamed"].rstrip())
+
+
 def test_answer_stream_saved_equals_displayed():
     async def run(chunks, final_text):
         events = chainlit_context()

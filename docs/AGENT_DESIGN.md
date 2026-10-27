@@ -133,11 +133,22 @@ unprofiled models (`graph.py:363-382`; built-in profiles exist only for `claude-
 | `CGPT_QUERY_MODEL` | `$CGPT_MAIN_MODEL` | query writer |
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | per-doc readers |
 | `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
-| `CGPT_MAIN_EFFORT` | chosen by the eval (§13) | Sonnet 5.5 adaptive-thinking effort (`low/medium/high/xhigh/max`) |
+| `CGPT_MAIN_EFFORT` | by model family: `claude-opus-*` → `high`, `claude-sonnet-*` → `xhigh` | supervisor thinking effort (optional override) |
+| `CGPT_READER_EFFORT` | `xhigh` | reader thinking effort (`off` disables) |
 | `CGPT_READER_CONCURRENCY` | `40` | global cap on concurrent reader calls (same number as today's per-search cap) |
 
 Built: all of these live in `models.py`, with `chat_model(model, max_tokens, effort, thinking)` choosing the right
 sampling settings per model family. Production needs no new env vars.
+
+**Thinking configuration (Vaibhav's decision, replacing "let the eval pick low or medium"):**
+- The supervisor runs at `xhigh` on Sonnet (the default) and at `high` if pointed at Opus. Only Sonnet 5.5 was
+  benchmarked; Vaibhav chose not to spend eval budget on an Opus supervisor.
+- Readers (Haiku 5.5) think at `xhigh`. The proposal had their thinking off.
+- `max_tokens` covers the thinking:
+  - supervisor 32,000, always streamed, which also lifts the Anthropic SDK's cap on non-streaming requests;
+  - readers 20,000, under that cap.
+- The query writer stays at `low`, and `ingest.py` is unchanged.
+- The superseded low/medium runs are kept in §13 as data points.
 
 OpenAI stays only for `text-embedding-3-large` (the Pinecone index). Readers move from gpt-5-mini to Haiku 5.5, so
 chat LLMs are Anthropic-only.
@@ -162,8 +173,9 @@ The plan:
 - Query writer on Sonnet 5.5: forced `tool_choice` is rejected (`chat_models.py:1155-1159`), so use
   `with_structured_output(Queries, method="json_schema")` (native structured outputs; supported per the models API).
   Built: with `effort="low"` (writing a few short queries needs little thought, and it keeps each search fast).
-- Readers on Haiku 5.5: thinking disabled (supported), no temperature, `max_tokens=8000`,
-  `with_structured_output(RelevantPassages, method="json_schema")`, `.with_retry()` as today.
+- Readers on Haiku 5.5: proposed with thinking disabled. Built: thinking on at `xhigh` (see above), no
+  temperature, `max_tokens=20000`, `with_structured_output(RelevantPassages, method="json_schema")`, `.with_retry()`
+  as today. Checked live: a reader call takes 3–5 s and ~400–800 output tokens including thinking.
 - Built: both the query writer and the readers are created with `disable_streaming=True, tags=["nostream"]`.
   LangGraph's message streaming would otherwise make every chat model in the graph stream internally, readers
   included, and the tag keeps their tokens out of the UI stream.

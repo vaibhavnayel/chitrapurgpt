@@ -49,7 +49,7 @@ You may use this tool multiple times to get more information. When you need seve
 You are also allowed to help with translations and transliterations.
 The user may attach files (images, PDFs, spreadsheets, documents). You may read, translate, transliterate, summarise or explain an attached file directly. Facts about the chitrapur saraswat community must still come from the knowledge base, with citations in the usual format. Refer to an attachment by its file name; don't list it under sources.
 When responding to the user, add citations to the sources you used to answer in wikipedia format. sources should not be duplicated. citation indices should be sequential starting at 1.
-Write each line of the sources list exactly like the example: [n] <title>, <document> page <start>-<end>, where <document> is the source file name from the search results (for example Sunbeam-1996-August.txt), with no comma before "page".
+Write each line of the sources list exactly like the example: [n] <title>, <document> page <start>-<end>, where <document> is the source file name from the search results (for example Sunbeam-1996-August.txt), with no comma before "page". The sources list goes at the end of the final answer, inside the <final_answer> tags.
 Before you give your answer to the user, think about your reasoning step by step and draft your answer, making sure citation formatting is correct.
 Put your final answer in <final_answer></final_answer> tags. Don't forget to close the tags.
 Only answer questions with information from the knowledge base. Don't use your own knowledge to answer the question.
@@ -246,10 +246,22 @@ OPEN, CLOSE = "<final_answer>", "</final_answer>"
 _FINAL_ANSWER = re.compile(r'<final_answer>(.*?)</final_answer>', re.DOTALL)
 
 
+# A "sources:" list written right after </final_answer> instead of inside it.
+_TRAILING_SOURCES = re.compile(r"\s*((?:\*\*)?sources?:?(?:\*\*)?:?[ \t]*\n(?:[ \t]*\[\d+\][^\n]*(?:\n|$))+)", re.IGNORECASE)
+_HAS_SOURCES = re.compile(r"(?im)^\s*(?:\*\*)?sources?:?(?:\*\*)?:?\s*$")
+
+
 def final_answer_text(text: str) -> str:
-    """What the user sees: the inside of the first <final_answer>…</final_answer>, else the whole reply."""
+    """What the user sees: the inside of the first <final_answer>…</final_answer>, else the whole reply. If the
+    model put the sources list just after the closing tag (Sonnet 5.5 sometimes does), it is kept with the answer."""
     match = _FINAL_ANSWER.search(text)
-    return match.group(1) if match else text
+    if not match:
+        return text
+    answer = match.group(1)
+    trailing = _TRAILING_SOURCES.match(text, match.end())
+    if trailing and not _HAS_SOURCES.search(answer):
+        answer = f"{answer.rstrip()}\n\n{trailing.group(1).rstrip()}\n"
+    return answer
 
 
 class FinalAnswerExtractor:
