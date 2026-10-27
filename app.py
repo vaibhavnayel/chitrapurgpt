@@ -23,6 +23,7 @@ import preview_idle
 admin.install(chainlit_server_app)
 preview_idle.install(chainlit_server_app)
 
+ANSWER_FAILED_MESSAGE = "Sorry, something went wrong while preparing the answer. Please try again in a few minutes."
 NO_ACCESS_MESSAGE = "Sorry, you no longer have access to ChitrapurGPT. If you think this is a mistake, please contact the person who invited you."
 
 @cl.oauth_callback
@@ -130,10 +131,18 @@ async def on_message(message: cl.Message):
         search_results = search_knowledge_base(message.content, exact=True)
         await cl.Message(content=search_results, tags=["command_output"]).send()
     else:
-        messages = cl.user_session.get("messages")
+        # Work on a copy: if answering fails half-way (e.g. an AI service is down), the
+        # half-finished tool call must not stay in the chat history, or every later
+        # message in this chat fails too.
+        messages = list(cl.user_session.get("messages"))
 
         messages.append(HumanMessage(content=message.content))
-        messages.append(await respond_to_user_message(messages))
-        
+        try:
+            messages.append(await respond_to_user_message(messages))
+        except Exception:
+            logging.exception("Couldn't answer the message")
+            await cl.Message(content=ANSWER_FAILED_MESSAGE).send()
+            return
+
         cl.user_session.set("messages", messages)
         await cl.Message(content=messages[-1].content).send()
