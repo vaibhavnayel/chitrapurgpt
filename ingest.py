@@ -3,10 +3,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_core.documents import Document
 import unidecode
-from langchain_anthropic import ChatAnthropic
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_community.callbacks.manager import get_openai_callback
 from pydantic import BaseModel, Field
 import re
 from multiprocessing import Pool, cpu_count
@@ -17,8 +14,12 @@ from tqdm import tqdm, trange
 import logging
 from tiktoken import get_encoding
 from retrievers import save_doc_to_json, load_doc_from_json, save_docs_to_jsonl, load_docs_from_jsonl, add_to_vector_store, get_doc_id
+import models
 
 dotenv.load_dotenv()
+
+# USD per million tokens (input, output), for the cost print only.
+PRICES = {"claude-sonnet-5-5": (2.0, 10.0), "claude-opus-5-5": (5.0, 25.0), "claude-haiku-5-5": (0.10, 0.50)}
 
 class ArticleBoundary(BaseModel):
     title: str = Field(description="The title of the article. MUST be ASCII characters only.")
@@ -31,7 +32,9 @@ class ArticleBoundary(BaseModel):
     end_page: int = Field(description="The page number of the last page of the article")
 
 class ArticleBoundaries(BaseModel):
-    scratchpad: str = Field(description="space for thinking and reasoning about the articles before extraction")
+    # Was `scratchpad`: Claude Sonnet 5.5 stops with stop_reason="refusal" (no output) whenever a structured-output
+    # schema has a field of that name. Nothing reads this field; the model also thinks natively now.
+    notes: str = Field(description="notes about the articles (titles, page ranges, the publication date) before listing them")
     article_boundaries: list[ArticleBoundary]
 
 def sanitize_string(text):
@@ -55,9 +58,12 @@ def extract_pdf_text(path):
     return sanitized_text
 
 
-def print_cost(cb):
-    print(f"Tokens -> Prompt: {cb.prompt_tokens:6d} | Completion: {cb.completion_tokens:7d} | Total: {cb.total_tokens:6d}")
-    print(f"Costs -> Prompt: ${cb.prompt_tokens * 3e-6:.4f} | Completion: ${cb.completion_tokens * 15e-6:.4f} | Total: ${cb.prompt_tokens * 3e-6 + cb.completion_tokens * 15e-6:.4f}")
+def print_cost(usage: dict, model: str = models.INGEST_MODEL):
+    prompt, completion = usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+    print(f"Tokens -> Prompt: {prompt:6d} | Completion: {completion:7d} | Total: {prompt + completion:6d}")
+    if model in PRICES:
+        p_in, p_out = (p / 1e6 for p in PRICES[model])
+        print(f"Costs -> Prompt: ${prompt * p_in:.4f} | Completion: ${completion * p_out:.4f} | Total: ${prompt * p_in + completion * p_out:.4f}")
 
 def parse_articles(full_text:str, article_boundaries:list[ArticleBoundary], path:str) -> list[Document]:
     docs = []
@@ -99,14 +105,17 @@ INSTRUCTIONS:
 - the published date will most likely be found on the cover page. you must use this as the published_date for all articles.
     """
 
-    llm = ChatAnthropic(model="claude-3-5-sonnet-latest", temperature=0, max_tokens=8000).with_structured_output(ArticleBoundaries, include_raw=True).with_retry()
+    # CGPT_INGEST_MODEL (default Sonnet 5.5): adaptive thinking, so no temperature, and its thinking counts against
+    # max_tokens (kept under the SDK's limit for a non-streaming call). Sonnet 5.5 rejects the forced tool call
+    # that function-calling structured output uses, so ask for the JSON schema directly.
+    llm = models.chat_model(models.INGEST_MODEL, max_tokens=20000).with_structured_output(
+        ArticleBoundaries, method="json_schema", include_raw=True).with_retry()
 
     text_with_line_numbers = add_line_numbers(text)
 
-    with get_openai_callback() as cb:
-        output = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=text_with_line_numbers)])
-        article_boundaries = output['parsed'].article_boundaries
-        print_cost(cb)
+    output = await llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=text_with_line_numbers)])
+    article_boundaries = output['parsed'].article_boundaries
+    print_cost(output['raw'].usage_metadata or {})
     print(f"extracted {len(article_boundaries)} article boundaries")
 
     return article_boundaries
