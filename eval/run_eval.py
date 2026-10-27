@@ -73,7 +73,39 @@ EVAL_SHIMS = sandbox_shims.apply()  # no-ops outside a proxy-only sandbox
 
 LEDGER = HERE / "results" / "spend_ledger.local.jsonl"
 PACKAGES = ["chainlit", "langchain", "langchain-core", "langchain-anthropic", "langchain-openai", "langgraph",
-            "deepagents", "anthropic", "openai", "langsmith", "pinecone"]
+            "deepagents", "anthropic", "openai", "langsmith", "psycopg", "pgvector"]
+
+
+def local_vector_db() -> str:
+    """The eval searches a local copy of the vector index (VECTOR_DATABASE_URL), never production. Returns
+    host:port/db for the record; exits if it isn't set or isn't local."""
+    import urllib.parse
+    dsn = os.environ.get("VECTOR_DATABASE_URL", "")
+    if not dsn:
+        sys.exit("VECTOR_DATABASE_URL is not set. The eval searches a local copy of the kb_article vector index "
+                 "(see README); set it, or pass --no-vector for fuzzy-only retrieval.")
+    parts = urllib.parse.urlsplit(dsn)
+    if parts.hostname not in ("localhost", "127.0.0.1", "::1"):
+        sys.exit("VECTOR_DATABASE_URL must point at a local database: the eval never searches production.")
+    return f"{parts.hostname}:{parts.port}{parts.path}"
+
+
+def no_vector_retrieval() -> None:
+    """--no-vector: fuzzy retrieval only (the vector half returns nothing), for when the embeddings endpoint is
+    unreachable. Patched before the app is imported, so no vector database is needed."""
+    import retrievers
+    from langchain_core.retrievers import BaseRetriever
+
+    class NoVector(BaseRetriever):
+        def _get_relevant_documents(self, query, *, run_manager):
+            return []
+
+    class NoVectorStore:
+        def as_retriever(self, **kwargs):
+            return NoVector()
+
+    retrievers.load_vector_store = lambda: NoVectorStore()
+    EVAL_SHIMS.append("no-vector-retrieval")
 DOC_RE = re.compile(r"(?ms)^(\d+)\. (.*?)\n Metadata:\n(\{.*?\})\nContent:\n(.*?)\n-{100}$")
 
 
@@ -422,22 +454,20 @@ async def main() -> None:
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     LEDGER.parent.mkdir(parents=True, exist_ok=True)
 
+    if args.no_vector:  # NOT comparable with full runs
+        no_vector_retrieval()
+        vector_db = None
+    elif ROOT == REPO:
+        vector_db = local_vector_db()
+    else:
+        vector_db = "per the --app-dir checkout"
     t = time.perf_counter()
     import app  # noqa: F401  (builds the retrievers; same import the Chainlit server does)
     import_s = time.perf_counter() - t
-    if args.no_vector:
-        # Fuzzy matching only, for when the embeddings API is unavailable. NOT comparable with full runs.
-        import steps
-        from langchain_core.retrievers import BaseRetriever
-
-        class NoVector(BaseRetriever):
-            def _get_relevant_documents(self, query, *, run_manager):
-                return []
-
-        steps.retriever = steps.HybridRetriever(fuzzy_retriever=steps.fuzzy_retriever, vector_db_retriever=NoVector())
-        EVAL_SHIMS.append("no-vector-retrieval")
     info = stack_info(args.label)
     info["app_import_s"] = round(import_s, 1)
+    info["vector_db"] = vector_db
+    info["vector_ef_search"] = os.environ.get("CGPT_VECTOR_EF_SEARCH") or "default"
     print(f"[{args.label}] app imported in {import_s:.1f}s; running {len(questions)} questions", flush=True)
     kb = KBFreshness() if args.concurrency == 1 else None
 

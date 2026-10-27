@@ -38,6 +38,11 @@ sys.path.insert(0, str(ROOT))
 DB = os.environ.get("E2E_DATABASE_URL", "")
 if urllib.parse.urlsplit(DB).hostname not in ("localhost", "127.0.0.1"):
     sys.exit("Set E2E_DATABASE_URL to a throwaway *local* Postgres database (it gets wiped).")
+# Vector search goes to a local copy of the kb_article index (the server prefers VECTOR_DATABASE_URL over the chat
+# database it gets as DATABASE_URL). Read-only here.
+VECTOR_DB = os.environ.get("VECTOR_DATABASE_URL", "")
+if "--no-vector" not in sys.argv and urllib.parse.urlsplit(VECTOR_DB).hostname not in ("localhost", "127.0.0.1"):
+    sys.exit("Set VECTOR_DATABASE_URL to a *local* database holding kb_article (see README), or pass --no-vector.")
 
 SECRET = secrets.token_hex(32)
 os.environ["CHAINLIT_AUTH_SECRET"] = SECRET  # for minting the JWT in this process

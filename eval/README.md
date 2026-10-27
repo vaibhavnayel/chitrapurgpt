@@ -36,6 +36,10 @@ Real user questions and all outputs stay in git-excluded `*.local.*` files:
 The harness unsets `DATABASE_URL`/`BUCKET_NAME` so it can never touch a real database. It sets placeholder OAuth
 variables because Chainlit refuses to register `@cl.oauth_callback` without them; no one signs in.
 
+Vector search goes to `VECTOR_DATABASE_URL`, a local copy of the `kb_article` index (see the main README). The harness
+exits if it's unset or isn't on localhost, rather than silently running without vector search. Each record notes
+which copy it searched (`stack.vector_db`) and the `hnsw.ef_search` used.
+
 ## Running
 
 ```sh
@@ -74,10 +78,8 @@ Superseded runs are marked in the spend ledger with a `note` (`report.py --spend
 
 ## Environment shims (sandbox only)
 
-`sandbox_shims.py` (used by `run_eval.py` and the E2E server) applies two shims when the environment needs them;
-they're listed in each record's `stack.eval_shims`:
-- `pinecone-env-proxy`: the Pinecone SDK ignores `HTTPS_PROXY`; where egress must go through a proxy, the harness
-  passes it to `Pinecone(...)` explicitly.
+`sandbox_shims.py` (used by `run_eval.py` and the E2E server) applies a shim when the environment needs it; it's
+listed in each record's `stack.eval_shims`:
 - `embeddings-no-local-tiktoken`: where tiktoken can't download its vocabulary, `OpenAIEmbeddings` sends query text
   instead of locally tokenized ids. The API tokenizes with the same vocabulary, so short queries embed the same.
 
