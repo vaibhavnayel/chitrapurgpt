@@ -31,7 +31,7 @@ os.environ.update({
 for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL"):
     os.environ.pop(k, None)
 
-# steps.py connects to Pinecone when imported; the chat logic isn't under test here.
+# steps.py builds the retrievers (knowledge base + vector store) when imported; the chat logic isn't under test here.
 _steps = types.ModuleType("steps")
 _steps.respond_to_user_message = None
 sys.modules["steps"] = _steps

@@ -1,5 +1,5 @@
 """Offline test of ingest.py: article-boundary extraction with a fake model, then main() writing a knowledge base in a
-temp directory with the Pinecone upsert stubbed. The real knowledge_base.jsonl and index are never touched.
+temp directory with the vector upsert stubbed. The real knowledge_base.jsonl and index are never touched.
 
   .venv/bin/python -m pytest tests/test_ingest.py -q
 (tests/ingest_live_check.py runs the extraction against the real model.)

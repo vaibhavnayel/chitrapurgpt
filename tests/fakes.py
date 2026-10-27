@@ -1,7 +1,7 @@
-"""Offline fakes for testing the LLM stack: no network, no API keys, no Pinecone.
+"""Offline fakes for testing the LLM stack: no network, no API keys, no vector database.
 
 Import this before `steps` (or `app`): it points retrievers' loaders at a tiny in-memory knowledge base so that
-importing steps doesn't connect to Pinecone or index the 30 MB knowledge_base.jsonl.
+importing steps doesn't need the vector database or index the 30 MB knowledge_base.jsonl.
 """
 from __future__ import annotations
 
