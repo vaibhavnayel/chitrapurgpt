@@ -198,7 +198,7 @@ def _model_key(model: BaseChatModel) -> str:
     return f"{provider}:{name}"
 
 
-def build_agent(model: BaseChatModel | None = None, tools: list | None = None):
+def build_agent(model: BaseChatModel | None = None, tools: list | None = None, model_call_limit: int = 15):
     """The main agent. Deep Agents provides the loop, parallel tool calls, repair of dangling tool calls (a turn
     that died mid-way can't wedge the chat) and Anthropic prompt caching. Its filesystem tools, general-purpose
     subagent and summarisation are switched off: the model sees one tool and exactly our system prompt."""
@@ -218,7 +218,8 @@ def build_agent(model: BaseChatModel | None = None, tools: list | None = None):
             FilesystemMiddleware(tools=["read_file"], tool_token_limit_before_evict=None,
                                  human_message_token_limit_before_evict=None),
             _todays_system_prompt,
-            ModelCallLimitMiddleware(run_limit=15),
+            # A safety net: the old loop had no cap. Real turns use far fewer (at most 9 seen in the eval).
+            ModelCallLimitMiddleware(run_limit=model_call_limit),
         ],
     )
 
@@ -346,10 +347,17 @@ async def respond(history: list[BaseMessage], message: cl.Message) -> list[BaseM
     messages = list(state["messages"])
     final = messages[-1]
     text = final_answer_text(_chunk_text(final))
+    if not isinstance(final, AIMessage) or text.startswith("Model call limits exceeded"):
+        text = OUT_OF_STEPS  # the safety cap on model calls stopped the turn
+        final = AIMessage(content=text)
+        messages.append(final)
     await answer.finish(text)
-    if isinstance(final, AIMessage):
-        final.content = text  # later turns see each earlier answer, not its drafts (as before)
+    final.content = text  # later turns see each earlier answer, not its drafts (as before)
     return messages
+
+
+OUT_OF_STEPS = ("Sorry, I couldn't finish researching this question within my search limit. "
+                "Please try asking about one part of it at a time.")
 
 
 # ---------------- history: edits and reopened chats ----------------
@@ -380,6 +388,8 @@ def history_from_thread(thread: dict) -> list[BaseMessage]:
             files = attachments.get(step.get("id"))
             if files:
                 output = f"{output}\n\n{uploads.resume_note(files)}" if output else uploads.resume_note(files)
+            if not output.strip():
+                continue  # e.g. an attachment-only message whose file record is gone: the API rejects empty text
             history.append(HumanMessage(content=output, id=step.get("id")))
         elif step.get("type") == "assistant_message":
             if step.get("isError") or kind == UPLOAD_NOTE["cgpt_kind"]:

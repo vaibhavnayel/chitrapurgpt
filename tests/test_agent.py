@@ -342,6 +342,7 @@ def test_history_from_thread_skips_commands_errors_and_notes():
         step("u6", "user_message", "And this?"),
         step("a7", "assistant_message", "rate limit exceeded", isError=True),
         step("u7", "user_message", ""),
+        step("u8", "user_message", "   "),  # empty, no saved file: dropped (the API rejects empty text)
         elements=[{"forId": "u5", "name": "note.pdf", "mime": "application/pdf"},
                   {"forId": "u7", "name": "photo.jpg", "mime": "image/jpeg"}],
     ))
@@ -369,6 +370,21 @@ def test_resume_then_continue(app, monkeypatch):
     asyncio.run(run())
     assert [(type(m).__name__, m.content) for m in model.requests[0][1:]] == [
         ("HumanMessage", "Who is Swamiji?"), ("AIMessage", "Swamiji is… [1]"), ("HumanMessage", "What did I ask?")]
+
+
+def test_model_call_cap_gives_a_friendly_answer(app, monkeypatch):
+    model = ScriptedChatModel(script=[AIMessage(content="searching", tool_calls=[tool_call(f"q{i}")]) for i in range(20)])
+    monkeypatch.setattr(steps, "_agent", steps.build_agent(model, model_call_limit=2))
+
+    async def run():
+        events = chainlit_context()
+        await app.on_chat_start()
+        await send(app, "everything about everything")
+        return events, cl.user_session.get("messages")
+
+    events, history = asyncio.run(run())
+    assert assistant_outputs(events) == [steps.OUT_OF_STEPS]
+    assert history[-1].content == steps.OUT_OF_STEPS and len(model.requests) == 2
 
 
 def test_history_before():
