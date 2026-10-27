@@ -3,6 +3,7 @@
 Status: **as built (Phase B)**. Code: `steps.py` (agent, tool, streaming, history), `models.py` (model settings),
 `uploads.py` (attachments), `app.py` (Chainlit handlers), `ingest.py`. Parity requirements and every behaviour change
 are in `docs/PARITY.md`. Old-vs-new measurements: §13 below; full report in `eval/REPORT.local.md` (local only).
+Later: vector search on pgvector (Phase C, §14) and the Detailed / Quick answer modes (Phase D, §15).
 
 APIs below were checked against the installed source:
 - deepagents 0.7.32
@@ -134,6 +135,8 @@ unprofiled models (`graph.py:363-382`; built-in profiles exist only for `claude-
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | per-doc readers |
 | `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
 | `CGPT_MAIN_EFFORT` | by model family: `claude-opus-*` → `high`, `claude-sonnet-*` → `xhigh` | supervisor thinking effort (optional override) |
+| `CGPT_DETAILED_EFFORT` | `$CGPT_MAIN_EFFORT` (or its by-family default) | supervisor thinking effort for Detailed answers (§15) |
+| `CGPT_QUICK_EFFORT` | `medium` | supervisor thinking effort for Quick answers (§15) |
 | `CGPT_READER_EFFORT` | `xhigh` | reader thinking effort (`off` disables) |
 | `CGPT_READER_CONCURRENCY` | `40` | global cap on concurrent reader calls (same number as today's per-search cap) |
 
@@ -658,3 +661,46 @@ Design points:
 
 **Not changed:** the fuzzy half, dedupe, readers, `format_docs`, and the agent. The benchmark on the new index is
 Hermes's to run.
+
+## 15. Answer modes: Detailed / Quick (Phase D)
+
+**What:** an "Answer" picker in the chat composer, built on Chainlit 2.9.6 Modes. It offers Detailed (preselected)
+and Quick, and `app.py` sends it with `set_modes` on chat start and on resume. The user's choice arrives with each
+message as `message.modes["answer"]`.
+
+| | Detailed | Quick |
+|---|---|---|
+| Supervisor effort | `CGPT_DETAILED_EFFORT`, default `CGPT_MAIN_EFFORT` (production: `high`) | `CGPT_QUICK_EFFORT`, default `medium` |
+| Prompt | unchanged | unchanged plus one line: a concise answer (a short paragraph or a few bullet points), searching only as much as needed, sources cited in the same format |
+| Query writer, retrieval, readers, tool, call limit | unchanged | unchanged |
+
+Design points:
+- **One agent per mode:** `steps.get_agent(mode)` builds an agent on first use and caches it, so each mode keeps a
+  stable prompt prefix for prompt caching. Detailed's agent is built exactly as before; a test compares its model
+  settings with the pre-change ones.
+- **Falls back to Detailed:** when a message carries no mode or an unknown one (older clients, the eval harness,
+  tests).
+- **Commands ignore the mode.**
+- **Edits:** an edit re-runs the same `Message`, so it keeps its mode. Chainlit doesn't save modes, so in a reopened
+  chat an edited message runs Detailed.
+- **Recorded:** the turn's LangSmith run carries metadata `answer_mode` and tag `answer_mode:<mode>`. The saved
+  answer's step metadata has `{"cgpt_answer_mode": <mode>}`, which `eval/run_eval.py` reads into
+  `turns[].answer_mode`; `--modes answer=quick` runs the eval in Quick.
+
+**Sanity check** (2026-10-27): the same 5 real questions, two light and three heavy (2 to 26 searches in Detailed),
+on the local pgvector copy. Readers at the code default `xhigh` in all three runs, no judge.
+- *Detailed* is the `bench_xhigh_pg` run: supervisor at `xhigh`, the code default. Production's Detailed is `high`.
+- *medium, no Quick line* is the `bench_sonnet_medium_pg` run: supervisor at `medium`, without the Quick prompt line.
+
+| | Quick | Detailed | medium, no Quick line |
+|---|---|---|---|
+| cost per question, mean | $0.075 | $0.647 | $0.127 |
+| latency p50 / mean | 31.5 s / 37.5 s | 132 s / 171 s | 58 s / 52 s |
+| searches per question, mean | 1.6 | 11.2 | 2.0 |
+| answer length, mean chars | 970 | 2,360 | 1,510 |
+| sources per answer, mean | 3.4 | 5.8 | 4.4 |
+| sources format ok / all doc-grounded | 5/5 / 5/5 | 5/5 / 5/5 | 5/5 / 5/5 |
+
+**Reader tail latency:** Quick's latency floor is the slowest reader in its search. In one E2E Quick turn (a single
+search), one `xhigh` reader wrote 9k output tokens and took 36 s of the turn's 53 s. Production's readers run at
+`medium`, so this should be rarer there. Quick's readers are deliberately the same as Detailed's.

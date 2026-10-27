@@ -12,6 +12,8 @@ Welcome to your AI-powered assistant for all things Chitrapur! I'm here to help 
 ## How to Use Me 💡
 
 1. Simply type your question in the chat box below
+   - Use the picker in the chat box to choose **Detailed** (the default) or **Quick**. Detailed researches more
+     thoroughly and cites more sources, but takes longer. Quick gives a shorter answer faster.
 2. Be as specific as possible in your queries
 3. Feel free to ask follow-up questions
 4. I can handle both simple and complex questions about Chitrapur culture and heritage
