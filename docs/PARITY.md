@@ -45,6 +45,20 @@ Approved: fixes 1, 2, 3, 4, 5, 7, 8 and 9; kept as before: 6 (dedupe key) and 10
 | 13 ingest | `tests/test_ingest.py` (offline, temp dir, upsert stubbed), `tests/ingest_live_check.py` |
 | 16 uploads | `tests/test_uploads.py` (each type, oversize, unsupported, damaged, missing, caps); E2E "PDF upload used", "image upload used"; eval `edge-upload-*` |
 | safety cap (new) | `test_model_call_cap_gives_a_friendly_answer` |
+| query writer fallback (new) | `test_query_writer_failure_falls_back_to_the_question` |
+| sources after `</final_answer>` (new) | `test_sources_written_after_the_closing_tag_are_kept` |
+| model settings | `tests/test_models.py` (effort by model family, reader thinking, overrides, older models keep temperature 0) |
+
+Changes beyond the PARITY decisions, all found by measuring the new stack and listed in `eval/REPORT.local.md`:
+- **1.9:** one prompt sentence restating the sources line format (Sonnet 5.5 added a comma before "page").
+- **2.1:** if the extracted final answer has no sources list and one follows `</final_answer>` directly, it is kept
+  (Sonnet 5.5 at `xhigh` did this in 3 of 47 turns).
+- **10.3:** the query writer retries and then falls back to searching with the question itself (Sonnet 5.5 once
+  returned truncated structured output there).
+- **11:** thinking effort by model family (Sonnet `xhigh`, Opus `high`); readers think at `xhigh`. Vaibhav's choice.
+- **13.1:** `ArticleBoundaries.scratchpad` renamed `notes` (Sonnet 5.5 refuses schemas with a `scratchpad` field).
+
+Outcomes on the full eval and the E2E are in `docs/AGENT_DESIGN.md` §13.
 
 ---
 

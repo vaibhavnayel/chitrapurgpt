@@ -64,7 +64,13 @@ uv pip install -p .venv --target .cache/olddeps -r <old freeze>     # old packag
 random order, each next to the passages its own stack retrieved (cited ones first, 24k chars per side), and asks
 for faithfulness and quality scores (1-5) and a winner. Its cost goes to the spend ledger.
 
-`check_openai.py` makes one one-word embeddings call to check the OpenAI account can serve requests.
+`check_openai.py` makes one one-word embeddings call to check the embeddings endpoint can serve requests (it
+honours `OPENAI_BASE_URL`).
+
+`--no-vector` runs with fuzzy retrieval only, for when the embeddings endpoint is unreachable. Such runs are marked
+`no-vector-retrieval` in `stack.eval_shims` and aren't comparable with full runs.
+
+Superseded runs are marked in the spend ledger with a `note` (`report.py --spend` shows it).
 
 ## Environment shims (sandbox only)
 

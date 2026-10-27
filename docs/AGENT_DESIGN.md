@@ -404,9 +404,25 @@ Built:
 - `langchain-groq` and `rank_bm25` are unused. They're left alone unless they block the resolve.
 - Admin and preview tests are re-run after the upgrade.
 
-## 11. Expected latency and cost vs the baseline
+## 11. Latency and cost: expected (Phase A) vs measured (Phase B)
 
-Measured on the current stack (§13; 15 questions, 35 searches). Per search: 6.1 queries, 61 docs retrieved, 38
+**Measured** on the same 14 questions, old stack vs the shipped configuration (Sonnet 5.5 at `xhigh`, Haiku 5.5
+readers at `xhigh`, full hybrid retrieval). Details in §13.
+
+| | Old stack | New stack | |
+|---|---|---|---|
+| Latency per question | mean 114 s, p50 117 s, p90 208 s | mean 90 s, p50 79 s, p90 177 s | −21% mean |
+| Time to first visible answer text | p50 117 s (= whole turn) | p50 66 s | streams, but late: `xhigh` thinking and searching take most of the turn |
+| Cost per question | mean $0.37 | mean $0.33 | −12% |
+| Searches per question | 2.5 (serial) | 4.5 (parallel) | the `xhigh` supervisor searches more |
+| Blind judge (Opus 5.5) | 1 win | 13 wins | faithfulness 4.71 vs 3.86, quality 4.57 vs 3.43 |
+
+The Phase A estimates below assumed readers without thinking and a low/medium supervisor. A superseded run of that
+configuration on the 30 real questions cost $0.06 and took 24 s per question, against $0.46 and 117 s for the shipped
+`xhigh` configuration: about 7× cheaper and 5× faster. It's not a clean comparison, because that run had fuzzy-only
+retrieval and the pre-fix prompt. Vaibhav chose `xhigh` for quality. §13 has the numbers.
+
+Phase A analysis of the old stack (§13; 15 questions, 35 searches). Per search: 6.1 queries, 61 docs retrieved, 38
 unique, 13.7 kept.
 - Retrieval p50 6.8 s, synchronous.
 - Reading p50 19.6 s: gpt-5-mini, 74% of its output tokens are reasoning.
@@ -414,6 +430,8 @@ unique, 13.7 kept.
 - Agent LLM calls are short (1.5–4.5 s) except the final answer.
 - Searches are strictly sequential (`parallel_tool_calls=False`); 2.3 per turn on average, up to 8. One real
   question made 8 searches in 247 s, each a reformulation of the same question.
+
+Phase A estimates (superseded by the measurements above):
 
 | | Baseline (measured) | New stack (estimate, Phase B measures) | Driver |
 |---|---|---|---|
@@ -425,7 +443,17 @@ unique, 13.7 kept.
 | Turn latency | p50 117 s, p90 185 s | ≈ 40–50% lower | the two rows above |
 | Time to first visible answer text | = full turn (p50 117 s) | full turn minus answer-writing time | streaming |
 
-### Risks
+### Risks (Phase A list, with what Phase B found)
+
+Outcomes:
+- Risk 1: tags 46/47 turns; one forced prompt fix (the sources line format) and one extraction fix (sources written
+  after `</final_answer>`).
+- Risk 2: grounding went up (100% vs 92%), and 17 docs are kept per search vs 13.7.
+- Risk 3: all tests pass on the new pins.
+- Risk 5: 0 reader errors in 14,491 calls.
+- Risk 6: proven by unit tests and the E2E.
+- Risk 8: unchanged.
+- New risk, cost tail: "every mention / complete list" questions trigger up to 30 searches ($1.91, 449 s) at `xhigh`.
 
 1. **Answer style and determinism change with Sonnet 5.5.** There's no temperature control and adaptive thinking is
    always on. Mitigation: the same prompt; eval comparison of tag compliance, citation format/grounding, sources per
@@ -452,7 +480,20 @@ unique, 13.7 kept.
    HTTPS proxy explicitly, and embeddings skip the local tiktoken length check because the tokenizer download host
    is blocked here. Neither changes app behaviour; both are recorded in each result's `stack.eval_shims`.
 
-## 12. Before Phase B: environment blockers
+## 12. Environment notes
+
+Phase B resolution of the Phase A blockers:
+- **Packages:** installed with `uv pip … -p .venv`.
+- **Postgres:** a local Postgres 15 was provided; `tests/test_admin.py` passes.
+- **OpenAI:** credit stayed exhausted and the key was removed. For the local eval only, embeddings
+  (`text-embedding-3-large`, the same model as the Pinecone index) come from an OpenAI-compatible endpoint set
+  through the standard `OPENAI_BASE_URL`. Nothing in the app names a provider.
+  - The endpoint was unreachable from the sandbox for part of the session. Runs from that period used fuzzy-only
+    retrieval and are marked superseded.
+  - The final run and the E2E use full hybrid retrieval.
+- **Budget:** raised to $40 for both phases.
+
+The Phase A text follows.
 
 1. **OpenAI credit.** The OpenAI account behind `.env` returns `429 insufficient_quota` for chat *and* embeddings.
    The new stack still needs embeddings for every Pinecone search, so Phase B can't run any search until credit is
@@ -469,7 +510,58 @@ unique, 13.7 kept.
    baseline on all 30 real questions + resume + edit would cost ≈ $9 more at the measured $0.30–0.37 per question.
    Phase B's full new-stack run is ≈ $2–4 for 43 questions, plus iteration on subsets.
 
-## 13. Baseline numbers (current stack, 2026-10-27)
+## 13. Results
+
+### 13.1 New stack (shipped configuration), 2026-10-27
+
+All 45 questions (30 real, 15 edge, including two with uploads). Sonnet 5.5 supervisor at `xhigh`, Haiku 5.5 readers
+at `xhigh`, full hybrid retrieval. Answers are as displayed by the shipped extraction: 3 of the 47 turns were
+re-extracted from their recorded raw output after the sources-after-the-tag fix. Run with
+`eval/run_eval.py --label new-xhigh`.
+
+| Metric | New stack (45 questions) | Old stack (15 questions, §13.2) |
+|---|---|---|
+| Errors | 0 | 0 |
+| Latency per question | mean 110 s, p50 91 s, p90 190 s, max 449 s | mean 114 s, p50 117 s, p90 208 s |
+| First visible answer text (per turn) | p50 72 s, p90 184 s | = turn: p50 117 s |
+| Cost per question | mean $0.42, p50 $0.31, p90 $0.86, max $1.91 | mean $0.37, p50 $0.39, max $0.95 |
+| Cost split | Haiku readers $10.54 (14,491 calls, 47.8M in, 11.5M out of which 7.7M thinking); Sonnet $8.06 (393 calls, 5.1M in of which 2.8M cache reads) | gpt-5-mini $3.05; Sonnet 4.5 $2.12 |
+| Searches per turn | mean 5.2, max 30 (parallel) | mean 2.3, max 8 (serial) |
+| Per search | 8.3 queries, 83 retrieved → 57 unique → 17.2 kept; p50 32 s | 6.1 queries, 61 → 38 → 13.7; p50 29 s |
+| Reader errors | 0 of 14,491 | 1 of 1,367 |
+| `<final_answer>` tags | 46/47 (the other: no tags, whole reply shown, which is correct) | 14/15 |
+| Streamed text == saved | 46/46 | n/a (no streaming) |
+| Sources list where citations exist | 43/43 (2 answers need none: transliteration, out-of-KB) | 13/13 |
+| Sequential from 1 / no duplicates | 43/43 / 42/43 | 12/13 / 11/13 |
+| Exact sources-line format | 43/43 | 12/13 |
+| Every cited document and title among docs the agent saw | 43/43 | 12/13 |
+| Page ranges match the retrieved metadata | 35/43 | 12/13 |
+| KB docs rewritten per question | 0 | 18.5 |
+| LangSmith | 1 root trace per turn ("ChitrapurGPT turn") | 1 per turn |
+
+The 8 page-range mismatches are all on knowledge-base entries whose page fields are really line numbers (e.g.
+`start_page 857, end_page 1077` for a children's column). The model shortens the impossible range to one page.
+That's a data issue in `knowledge_base.jsonl`, not a citation error.
+
+**Blind pairwise judge** (`eval/judge.py`, claude-opus-5-5), on the 14 LLM questions both stacks answered. Each answer
+is shown next to the passages its own stack retrieved, in random order.
+- The new stack wins **13**, the old stack wins **1** (`real-02`: the new answer added a claim backed only by an uncited
+  passage, plus the KB page-range issue above).
+- Mean faithfulness 4.71 vs 3.86; mean quality 4.57 vs 3.43. Judge cost $1.55.
+- One verdict (`edge-out-of-kb`) was re-run after fixing the judge's evidence text. It had told the judge "no search
+  was made" for a search that kept nothing, which made a truthful "I searched and found nothing" look fabricated.
+
+**Supervisor effort.** Fixed by Vaibhav at `xhigh` (Sonnet). Earlier same-retrieval data points, all superseded:
+- `low` vs `medium` on 15 questions, fuzzy-only: judge 8–7, faithfulness 4.33 vs 4.47, quality 4.20 vs 4.00.
+  `low` was 13% faster and 19% cheaper and grounded better (100% vs 80%).
+- An Opus 5.5 supervisor (`high` by the model-family rule) was not benchmarked, by Vaibhav's choice.
+
+**E2E** (`tests/e2e/run_e2e.py`, real retrieval, the shipped configuration): 12/12 checks pass:
+- streaming, saved == displayed (socket and database), persisted step names and nesting;
+- PDF and image uploads used in the answer;
+- Exact/Fuzzy Search unchanged, edit truncation, resume with memory, `/admin` renders the thread.
+
+### 13.2 Baseline numbers (old stack, 2026-10-27)
 
 `eval/report.py eval/results/baseline.local.jsonl`.
 
@@ -481,7 +573,8 @@ reader and the embedding endpoints). The baseline therefore has:
 - the Fuzzy Search command case.
 
 Not captured: `edge-resume`, `edge-edit`, `real-05`…`real-30`, and the two upload cases (skipped on purpose: the
-current stack ignores files). The sample leans towards heavy edge questions, so per-question cost and latency are
+current stack ignores files). Phase B didn't extend it: the old stack's readers need OpenAI chat, the OpenAI key was
+removed, and the $40 budget went to the new-stack run, which at `xhigh` costs more than planned. The sample leans towards heavy edge questions, so per-question cost and latency are
 higher than a typical real question. The four real ones averaged $0.34 and 101 s, with one 8-search outlier.
 
 | Metric | Value |
