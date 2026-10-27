@@ -86,10 +86,10 @@ async def on_message(message: cl.Message):
         return
     if message.command == "Fuzzy Search":
         search_results = search_knowledge_base(message.content, exact=False)
-        await cl.Message(content=search_results, tags=["command_output"], metadata=steps.COMMAND_OUTPUT).send()
+        await cl.Message(content=search_results, tags=["command_output"], metadata=dict(steps.COMMAND_OUTPUT)).send()
     elif message.command == "Exact Search":
         search_results = search_knowledge_base(message.content, exact=True)
-        await cl.Message(content=search_results, tags=["command_output"], metadata=steps.COMMAND_OUTPUT).send()
+        await cl.Message(content=search_results, tags=["command_output"], metadata=dict(steps.COMMAND_OUTPUT)).send()
     else:
         # An edited message comes back with its original id: answer it as if what followed it never happened.
         history = steps.history_before(cl.user_session.get("messages") or [], message.id)

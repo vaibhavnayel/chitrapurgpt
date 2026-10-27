@@ -325,7 +325,7 @@ async def respond(history: list[BaseMessage], message: cl.Message) -> list[BaseM
     If the turn fails, the exception propagates (Chainlit shows it) and the caller keeps the old history."""
     content, notes = await asyncio.to_thread(uploads.to_content, message.content, list(message.elements or []))
     for note in notes:
-        await cl.Message(content=note, metadata=UPLOAD_NOTE).send()
+        await cl.Message(content=note, metadata=dict(UPLOAD_NOTE)).send()
     human = HumanMessage(content=content, id=message.id)
     answer = AnswerStream()
     state = None
