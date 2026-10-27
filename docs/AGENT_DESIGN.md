@@ -150,8 +150,8 @@ sampling settings per model family. Production needs no new env vars.
 - The query writer stays at `low`, and `ingest.py` is unchanged.
 - The superseded low/medium runs are kept in §13 as data points.
 
-OpenAI stays only for `text-embedding-3-large` (the Pinecone index). Readers move from gpt-5-mini to Haiku 5.5, so
-chat LLMs are Anthropic-only.
+OpenAI stays only for `text-embedding-3-large` (the vector index; Pinecone until Phase C, now pgvector, §14).
+Readers move from gpt-5-mini to Haiku 5.5, so chat LLMs are Anthropic-only.
 
 **Sampling and thinking (PARITY 11).** `temperature=0` can't be kept on the main model. langchain-anthropic 1.7.6
 raises `ValueError` for `claude-sonnet-5-5` when `temperature` ≠ 1, `top_k` is set, `top_p` ≠ 1, or `thinking` is
@@ -203,11 +203,11 @@ async def search_knowledge_base(research_query: str) -> str:
 - `contextualize_docs` rewrites **copies** of the docs (fixes PARITY 4.9).
 - Each read runs `async with READER_SEMAPHORE:` and is wrapped in `try/except`: a doc that still fails after retries
   is logged and skipped (PARITY 10.2).
-- `format_docs`, `deduplicate_docs`, `FuzzyMatchRetriever`, `HybridRetriever` and the Pinecone wrapper are reused
-  unchanged from `retrievers.py`.
+- `format_docs`, `deduplicate_docs`, `FuzzyMatchRetriever` and `HybridRetriever` are reused unchanged from
+  `retrievers.py`. The Pinecone wrapper was too, until Phase C replaced it with `vector_store.py` (§14).
 - Module name: the agent code stays in `steps.py`, and `app.py` switches to `import steps` (module access at call
   time). `tests/test_admin.py` already replaces `sys.modules["steps"]` with a stub, so the admin test keeps working
-  with no edit and without Pinecone.
+  with no edit and without the vector database.
 
 **System prompt per turn (PARITY 1.7/12).** The prompt text moves to `steps.py` as a template, and a `@dynamic_prompt`
 middleware (langchain `agents/middleware/types.py:1690`) fills in today's date on every model call. The session
@@ -476,9 +476,10 @@ Outcomes:
    asyncio semantics but must be proven. Unit test in Phase B.
 7. **Big uploads in history.** A 100-page PDF is ~200k tokens and is re-sent every turn of that session. Prompt
    caching cuts that to ~$0.02 per later turn, but latency grows. The caps in §7 bound it.
-8. **The eval runs with two environment shims** (`eval/run_eval.py`): the Pinecone SDK is given the sandbox's
-   HTTPS proxy explicitly, and embeddings skip the local tiktoken length check because the tokenizer download host
-   is blocked here. Neither changes app behaviour; both are recorded in each result's `stack.eval_shims`.
+8. **The eval runs with environment shims** (`eval/sandbox_shims.py`). Embeddings skip the local tiktoken length
+   check because the tokenizer download host is blocked here. Until Phase C, the Pinecone SDK was also given the
+   sandbox's HTTPS proxy explicitly; that shim went with Pinecone. Shims don't change app behaviour and are recorded
+   in each result's `stack.eval_shims`.
 
 ## 12. Environment notes
 
@@ -599,3 +600,61 @@ Answers by hand:
 - **Follow-up:** used the first turn's context.
 - **Hindi/Kannada:** answered in the question's script with citations; the source-list format deviated (PARITY 1.9).
 - **Transliteration:** done without a search.
+
+## 14. Vector search: Pinecone → Postgres + pgvector (Phase C)
+
+**Why:**
+- Pinecone's free plan caps data read at 1 GB a month. The eval runs used it up, so every query returned 429,
+  including on the live site.
+- The new stack runs about 2.4× as many vector queries per question, so the plan was too small anyway.
+- Vaibhav decided to move the index into the Postgres the app already uses (`DATABASE_URL`; Render Postgres 16 with
+  pgvector 0.8.0) and drop Pinecone.
+
+**What replaced what:**
+
+| | Pinecone (before) | pgvector (now) |
+|---|---|---|
+| Store | `pinecone_vectorstore_wrapper.PineconeVectorStore` | `vector_store.PgVectorStore` (a LangChain `VectorStore`, sync, psycopg 3 pool) |
+| Data | index `chitrapur-gpt`, dotproduct, 3072 dims | table `kb_article(id text pk, content text, metadata jsonb, embedding halfvec(3072))` |
+| Index | managed | HNSW `halfvec_ip_ops`, `m = 32, ef_construction = 200` (46 MB; ~10 s to build locally) |
+| Query | `top_k = 15` with values, then local MMR | `ORDER BY embedding <#> q LIMIT 15` with the vectors, then **the same MMR function** (moved over unchanged) |
+| Retriever | `as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 15})` | unchanged |
+| Metadata | Pinecone's return: None → "Unknown", non-scalars → str, ints → floats | stored exactly that way (`pinecone_style_metadata`), so `format_docs` output is byte-identical |
+| Ids | `<source>-<title>` | same |
+| Ingest | `add_to_vector_store` lists all ids, upserts new docs | same behaviour via `existing_ids()` + upsert |
+| Embeddings | `text-embedding-3-large` | same model; all 5,924 articles re-embedded through the same LangChain path |
+| Config | `PINECONE_API_KEY`, `PINECONE_INDEX_NAME` | `VECTOR_DATABASE_URL` or else `DATABASE_URL` (production: nothing new), `CGPT_VECTOR_EF_SEARCH` (default 400) |
+
+Design points:
+- **`halfvec`:** pgvector indexes `vector` only up to 2,000 dimensions; `halfvec` (16-bit floats) indexes up to 4,000.
+  MMR runs on the half-precision vectors, against the full-precision query embedding as before.
+- **Search settings per connection:** the pool's configure callback runs `SET hnsw.ef_search = 400` and
+  `SET enable_seqscan = off` on the store's connections only. At ef_search 400 the planner otherwise chooses an
+  exact sequential scan: its cost model ignores detoasting the halfvec column. That scan takes ~430 ms locally,
+  worse on Render's small database, and competes with chat traffic. A test asserts the plan is
+  `Index Scan using kb_article_embedding_hnsw`.
+- **Single source of truth:** `vector_store.DDL`, `pinecone_style_metadata()` and `doc_id()` are imported by
+  `scripts/load_vectors.py`, which builds and loads the table (idempotently, from a saved embedding matrix or by
+  re-embedding).
+- **Failing loudly:** with neither `VECTOR_DATABASE_URL` nor `DATABASE_URL`, the store raises at import. The eval
+  and E2E harnesses (which never get `DATABASE_URL`) refuse to run unless `VECTOR_DATABASE_URL` points at a local
+  database.
+
+**Parity** (measured by Hermes on a local copy):
+- Replaying 2,333 recorded Pinecone searches, 82–85% return the identical top 5. Every difference is a near-tie inside
+  the top 30 (median similarity gap 0.005). The noise floor between two Pinecone-era embedding runs is 98–99%, so
+  the gap is small model-serving drift. Vaibhav accepted this.
+- HNSW at ef_search 400 against exact float32 search (300 recorded queries): recall@15 0.999, and 99% give the
+  identical final MMR top 5, at p50 9 ms. ef_search 100 gives 89% and 200 gives 96%.
+- Tests: `tests/test_vector_store.py`:
+  - MMR picks equal the moved function's;
+  - `Document` shape;
+  - Pinecone-style metadata through `format_docs`;
+  - ef_search applied, sequential scans off on store connections only, HNSW in the plan;
+  - upsert idempotence, and ingest skipping existing ids;
+  - a vector hit from the local copy formats byte-identically to a recorded Pinecone-era tool output (an article
+    from the knowledge base, `tests/fixtures/pinecone_vector_hit.txt`).
+- The E2E ran with real retrieval against the local copy.
+
+**Not changed:** the fuzzy half, dedupe, readers, `format_docs`, and the agent. The benchmark on the new index is
+Hermes's to run.

@@ -8,7 +8,7 @@ base of ~5,900 magazine articles (Chitrapur Sunbeam), with citations. Built on C
 - Chat interface powered by Chainlit, with Google sign-in and an allow-list managed at `/admin`
 - An agent that searches the knowledge base (several searches at once when useful), reads each retrieved article
   for the question, and answers with Wikipedia-style citations; the answer streams as it is written
-- Hybrid search: fuzzy and phonetic matching over the articles plus Pinecone vector search
+- Hybrid search: fuzzy and phonetic matching over the articles plus vector search in Postgres (pgvector)
 - Translation and transliteration, and reading files you attach (images, PDFs, Word, Excel, CSV, text)
 - Exact Search and Fuzzy Search commands for boolean keyword search (no LLM)
 
@@ -21,7 +21,8 @@ See `docs/AGENT_DESIGN.md` for the design and `docs/PARITY.md` for the behaviour
   chats)
 - `models.py`: which model does what (all env settings, see below)
 - `uploads.py`: turns attached files into content the agent can read
-- `retrievers.py`, `pinecone_vectorstore_wrapper.py`: the fuzzy and vector retrievers
+- `retrievers.py`: the fuzzy and hybrid retrievers; `vector_store.py`: vector search in Postgres + pgvector
+- `scripts/load_vectors.py`: builds and loads the vector index
 - `search_engine.py`: the Exact/Fuzzy Search commands
 - `ingest.py`: offline import of new magazine issues into the knowledge base
 - `access.py`, `admin.py`: who may sign in, and the admin dashboard
@@ -29,7 +30,7 @@ See `docs/AGENT_DESIGN.md` for the design and `docs/PARITY.md` for the behaviour
 
 ## Models and settings
 
-Chat models are Anthropic; OpenAI is used only for the `text-embedding-3-large` embeddings the Pinecone index was
+Chat models are Anthropic; OpenAI is used only for the `text-embedding-3-large` embeddings the vector index was
 built with. Every model is an env setting, and the defaults are the production choices, so none needs to be set:
 
 | Env var | Default | Used for |
@@ -56,13 +57,43 @@ pip install -r requirements.txt
 ```
 ANTHROPIC_API_KEY = your-anthropic-api-key
 OPENAI_API_KEY = your-openai-api-key
-PINECONE_API_KEY = your-pinecone-api-key
 LANGCHAIN_API_KEY = your-langsmith-api-key
 LANGCHAIN_TRACING = "true"
 LANGCHAIN_PROJECT = your-langsmith-project
+VECTOR_DATABASE_URL = postgresql://postgres@127.0.0.1:55433/cgpt_vec   # local copy of the vector index
 ```
 Sign-in and chat history also need `DATABASE_URL`, `CHAINLIT_AUTH_SECRET`, `OAUTH_GOOGLE_CLIENT_ID`,
 `OAUTH_GOOGLE_CLIENT_SECRET`, `CHAINLIT_URL` and `ADMIN_EMAILS` (set on Render).
+
+## Vector index (Postgres + pgvector)
+
+The vector half of the hybrid search lives in the app's own Postgres, in table `kb_article`:
+- one row per article, id `<source>-<title>`;
+- the article text, its metadata (jsonb), and a `text-embedding-3-large` embedding as `halfvec(3072)`.
+  pgvector indexes `vector` only up to 2,000 dimensions, `halfvec` up to 4,000.
+- An HNSW index (`halfvec_ip_ops`, `m = 32, ef_construction = 200`). Search is by inner product (the embeddings are
+  unit-length): the 15 nearest, then MMR picks 5.
+- The table, index and metadata format are defined once, in `vector_store.py`.
+
+Settings:
+- **Which database:** `VECTOR_DATABASE_URL` if set, else `DATABASE_URL`. Production uses `DATABASE_URL`, so it needs
+  no new env var.
+- **Search breadth:** `CGPT_VECTOR_EF_SEARCH` (default 400). Lower is faster but less exact: at 400, 99% of searches
+  give the same final top 5 as an exact search.
+- The store's own connections also turn off sequential scans, so Postgres always uses the index. Without that it
+  sometimes picks an exact scan that is ~50× slower.
+
+Build and load (idempotent: creates the `vector` extension, table and index, then upserts every article in
+`knowledge_base.jsonl`):
+```bash
+.venv/bin/python scripts/load_vectors.py --dsn-env VECTOR_DATABASE_URL --embeddings .cache/kb_embeddings.npz
+```
+- Without `--embeddings` it re-embeds all ~5,900 articles, roughly $1 of embeddings.
+- Locally, a pgvector Postgres 16 container serves as the copy (`VECTOR_DATABASE_URL` above). Production loads into
+  the Render database the same way.
+- `ingest.py` adds new articles through the same store and skips ids already present.
+
+Pinecone is no longer used. After cutover, `PINECONE_API_KEY` and `PINECONE_INDEX_NAME` can be deleted on Render.
 
 ## Running Locally
 
@@ -81,6 +112,9 @@ Offline (no network, no API keys; fake models):
 .venv/bin/python tests/test_preview_oauth.py
 TEST_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_test .venv/bin/python tests/test_admin.py   # throwaway DB, wiped
 ```
+`tests/test_vector_store.py` needs `VECTOR_DATABASE_URL` pointing at the local pgvector copy. It reads the copy and
+tests the store in a throwaway database it creates on the same server and drops afterwards. Without it, those tests
+are skipped.
 
 With real models (small API cost):
 ```bash
@@ -88,8 +122,9 @@ With real models (small API cost):
 E2E_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_e2e .venv/bin/python tests/e2e/run_e2e.py   # ~$0.5
 ```
 The E2E test starts a real Chainlit server on a throwaway local Postgres, signs in with a locally minted JWT and
-drives it over socket.io (streaming, saved messages, steps, uploads, commands, edit, resume, `/admin`). Add
-`--no-llm` to check only the server, sign-in, socket and database plumbing.
+drives it over socket.io (streaming, saved messages, steps, uploads, commands, edit, resume, `/admin`). Vector search
+goes to the local copy (`VECTOR_DATABASE_URL`, required). Add `--no-llm` to check only the server, sign-in, socket
+and database plumbing.
 
 ## Evaluation
 

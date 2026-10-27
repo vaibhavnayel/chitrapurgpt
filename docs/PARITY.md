@@ -60,6 +60,15 @@ Changes beyond the PARITY decisions, all found by measuring the new stack and li
 
 Outcomes on the full eval and the E2E are in `docs/AGENT_DESIGN.md` §13.
 
+**Phase C (vector search on Postgres + pgvector, `docs/AGENT_DESIGN.md` §14).** The one intended difference is the
+backend: Pinecone → `kb_article` in the app's Postgres.
+- What the agent sees is unchanged, and so are the retriever parameters and MMR. Vector hits still show Pinecone's
+  metadata format (floats, "Unknown"), checked byte-for-byte against a recorded Pinecone-era tool output
+  (`tests/fixtures/pinecone_vector_hit.txt`).
+- Ranking differs slightly: 82–85% of replayed searches return the identical top 5, and the rest are near-ties.
+  Vaibhav accepted this.
+- `ingest.py` keeps skipping articles already indexed.
+
 ---
 
 ## 1. System prompt (`app.py: system_prompt`)
@@ -106,7 +115,7 @@ Outcomes on the full eval and the E2E are in `docs/AGENT_DESIGN.md` §13.
 |---|---|---|---|
 | 4.1 | Tool name `search_knowledge_base`, one arg `research_query: str`, description "Search the knowledge base to get relevant magazine articles. The query should be a question that you want to answer." | keep | unit: tool schema snapshot |
 | 4.2 | Query writer: Sonnet 4.5 (`temperature=0`, no `max_tokens`, so langchain-anthropic's default 64,000), structured output `Queries{reasoning, queries}`, system prompt verbatim ("…parse it into a list of queries… short and concise… exact match, fuzzy match and vector search"), user message `here is the question: {q}`. No retry. Baseline: ~4 queries per search. | keep (model → `CGPT_QUERY_MODEL`, default the main model) | eval: queries per search; unit: prompt snapshot |
-| 4.3 | Retrieval per query: `HybridRetriever` = `FuzzyMatchRetriever(k=5)` results **then** Pinecone MMR (`k=5, fetch_k=15, lambda_mult=0.5`, MMR computed locally with cosine similarity in `pinecone_vectorstore_wrapper.py`), index `chitrapur-gpt`, namespace `""`, `text-embedding-3-large`. Fuzzy scoring: content (partial_ratio + token overlap + double-metaphone token_set_ratio)/3 × 0.9 + metadata (title/summary/description fuzzy or phonetic max) × 0.1, threshold 30, sorted by (phonetic, token overlap, ratio). | keep exactly (same objects reused) | unit: same docs for fixed queries on the fuzzy side; vector side spot-checked in eval |
+| 4.3 | Retrieval per query: `HybridRetriever` = `FuzzyMatchRetriever(k=5)` results **then** Pinecone MMR (`k=5, fetch_k=15, lambda_mult=0.5`, MMR computed locally with cosine similarity in `pinecone_vectorstore_wrapper.py`), index `chitrapur-gpt`, namespace `""`, `text-embedding-3-large`. Fuzzy scoring: content (partial_ratio + token overlap + double-metaphone token_set_ratio)/3 × 0.9 + metadata (title/summary/description fuzzy or phonetic max) × 0.1, threshold 30, sorted by (phonetic, token overlap, ratio). | keep exactly (same objects reused). **Phase C:** the vector half moved from Pinecone to Postgres + pgvector (`vector_store.py`). Same `k`/`fetch_k`/`lambda_mult`, the same MMR function, the same embedding model, and identically formatted metadata; 82–85% identical top 5 against recorded Pinecone searches, every difference a near-tie (accepted). | unit: same docs for fixed queries on the fuzzy side; `tests/test_vector_store.py` for the vector side; eval |
 | 4.4 | `retriever.batch(queries)` is **synchronous** inside the async tool, so it blocks the event loop (every user's session) for the whole retrieval: baseline p50 ≈ 6 s per search. | **fix**: `await asyncio.to_thread(...)` or `abatch`, same results | eval: retrieval wall time |
 | 4.5 | Dedupe on `(page_content, str(metadata))`, keeping first-seen order (fuzzy hits of query 1, vector hits of query 1, fuzzy hits of query 2, …). The fuzzy copy (JSONL: int pages, `author: None`) and the Pinecone copy (float pages `3.0`, `author: "Unknown"`) of the **same article** never compare equal, so both can be read and both shown. | keep the key (changing it changes what the agent sees); flagged. Baseline: 61 docs retrieved → 38 unique per search; 20 cases of the same article kept twice in one search (35 searches); 132 of 479 kept docs were Pinecone copies (float pages). | eval: unique vs retrieved per search; duplicate articles kept |
 | 4.6 | Reader: one call per doc, prompt verbatim (query interpolated into the system prompt; doc as `format_docs([doc])` in the user message), structured output `RelevantPassages{reasoning, passages_in_context}`, gpt-5-mini, `max_tokens=8000`, `with_retry()` (3 attempts, exponential jitter), `abatch(max_concurrency=40)` per search. `temperature=0` is **silently dropped** by langchain-openai for gpt-5 models (they run at temperature 1 with medium reasoning; baseline ≈ 80% of reader output tokens are reasoning). | keep prompt/schema/filter; model → `CGPT_READER_MODEL` (Haiku 5.5); the concurrency cap becomes **global** across parallel searches | eval: reader calls, kept per search, cost; unit: prompt snapshot |
@@ -200,7 +209,7 @@ See "Current test status" at the top. Phase B must keep all of them passing (`te
 | # | Behaviour | Status |
 |---|---|---|
 | 15.1 | `steps.py` imports `langchain_google_genai` and `ChatGoogleGenerativeAI` but doesn't use them; `rank_bm25` and `langchain-groq` are in requirements but unused. deepagents hard-depends on `langchain-google-genai>=4.4.2` anyway. | Remove the unused imports in the files we touch. Leave requirements pins we don't need to move. |
-| 15.2 | Retrievers and Pinecone are built at import of `steps.py` (fuzzy index over 5,924 docs, ~15 s at startup). | keep (build once at import) |
+| 15.2 | Retrievers and Pinecone are built at import of `steps.py` (fuzzy index over 5,924 docs, ~15 s at startup). | keep (build once at import). Phase C: the vector store's connection pool is created at import but connects lazily. |
 | 15.3 | The final answer often starts with `\n` (the text right after `<final_answer>`). | keep (2.1) |
 | 15.4 | Structured-output calls inside the tool show up in LangSmith under nested `RunnableSequence`s; readers are 60–90 LLM runs per turn. | fine |
 | 15.5 | `chainlit.md` (the readme shown in the UI) mentions a `/Keyword Search` command that doesn't exist. | out of scope, mention only |
