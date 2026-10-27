@@ -25,3 +25,4 @@ asyncpg==0.30.0
 # reading uploaded files (images are resized before they go to the model; .xlsx as text)
 pillow==13.0.0
 openpyxl==3.1.5
+pypdf==6.21.2
