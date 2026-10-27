@@ -23,20 +23,29 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 calls = []
 
 
-async def fake_respond(messages):
-    """Behaves like steps.respond_to_user_message: grows `messages` in place while it works."""
-    calls.append([type(m).__name__ for m in messages])
+async def fake_respond(history, message):
+    """Behaves like steps.respond: works on its own list and returns the new history (or raises)."""
+    calls.append([type(m).__name__ for m in history])
+    messages = [*history, HumanMessage(content=message.content, id=message.id)]
     messages.append(AIMessage(content="", tool_calls=[{"name": "search_knowledge_base", "args": {"research_query": "q"}, "id": "t1"}]))
     if fake_respond.fail:
         raise RuntimeError("Error code: 429 - You have no credits remaining")
     messages.append(ToolMessage(content="docs", tool_call_id="t1"))
     messages.append(AIMessage(content="the answer"))
-    return messages[-1]
+    await said_append("the answer")  # steps.respond sends (streams) the answer itself
+    return messages
 
 
 steps = types.ModuleType("steps")
-steps.respond_to_user_message = fake_respond
+steps.respond = fake_respond
+steps.history_before = lambda messages, message_id: list(messages)
+steps.COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
 sys.modules["steps"] = steps
+said = []
+
+
+async def said_append(content):
+    said.append(content)
 
 
 async def main():
@@ -44,16 +53,12 @@ async def main():
     import app
 
     session = {"messages": [SystemMessage(content="system")], "user": None}
-    said = []
-
-    async def send(content):
-        said.append(content)
 
     app.cl = types.SimpleNamespace(
         user_session=types.SimpleNamespace(get=session.get, set=session.__setitem__),
-        Message=lambda content, **kw: types.SimpleNamespace(send=lambda: send(content)),
+        Message=lambda content, **kw: types.SimpleNamespace(send=lambda: said_append(content)),
     )
-    msg = lambda text: types.SimpleNamespace(content=text, command=None)  # noqa: E731
+    msg = lambda text: types.SimpleNamespace(content=text, command=None, id=text)  # noqa: E731
 
     fake_respond.fail = True
     await app.on_message(msg("first question"))
@@ -63,7 +68,7 @@ async def main():
     fake_respond.fail = False
     await app.on_message(msg("second question"))
     assert said[-1] == "the answer", said
-    assert calls[-1] == ["SystemMessage", "HumanMessage"], calls[-1]  # no dangling tool call sent to the AI
+    assert calls[-1] == ["SystemMessage"], calls[-1]  # no dangling tool call sent to the AI
     names = [type(m).__name__ for m in session["messages"]]
     assert names[:2] == ["SystemMessage", "HumanMessage"] and "ToolMessage" in names
     assert isinstance(session["messages"][1], HumanMessage) and session["messages"][1].content == "second question"
