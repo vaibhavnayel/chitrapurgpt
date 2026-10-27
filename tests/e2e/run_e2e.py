@@ -11,7 +11,7 @@ socket.io client like the browser does. Checks:
   6. resuming a thread works and the agent remembers the conversation
   7. /admin's chat viewer renders a new-stack thread
 
-  .venv/bin/python tests/e2e/run_e2e.py
+  .venv/bin/python tests/e2e/run_e2e.py              # add --no-llm for plumbing only, --no-vector for fuzzy-only retrieval
 """
 import asyncio
 import glob
@@ -75,6 +75,8 @@ def start_server(log_path: Path) -> subprocess.Popen:
            "CHAINLIT_URL": BASE, "PYTHONPATH": str(ROOT / "tests" / "e2e"), "CGPT_E2E_SHIMS": "1"}
     for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL", "BUCKET_NAME"):
         env.pop(k, None)
+    if "--no-vector" in sys.argv:  # fuzzy retrieval only, when the embeddings API is unreachable
+        env["CGPT_E2E_NO_VECTOR"] = "1"
     log = open(log_path, "w")
     return subprocess.Popen([str(ROOT / ".venv/bin/chainlit"), "run", "app.py", "-h", "--port", str(PORT),
                              "--host", "127.0.0.1"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)

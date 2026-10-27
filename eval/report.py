@@ -279,11 +279,14 @@ def compare(a_name: str, a: list[dict], b_name: str, b: list[dict]) -> None:
 def spend() -> None:
     rows = [json.loads(line) for line in LEDGER.open()] if LEDGER.exists() else []
     by_label = defaultdict(float)
+    notes = {}
     for r in rows:
         by_label[r["label"]] += r["usd"]
+        if r.get("note"):
+            notes[r["label"]] = r["note"]
     for label, usd in sorted(by_label.items()):
-        print(f"{label:<20} ${usd:.3f}")
-    print(f"{'TOTAL':<20} ${sum(by_label.values()):.3f}  ({len(rows)} question runs)")
+        print(f"{label:<20} ${usd:.3f}" + (f"  [{notes[label]}]" if label in notes else ""))
+    print(f"{'TOTAL':<20} ${sum(by_label.values()):.3f}  ({sum(1 for r in rows if r['id'] != 'SUPERSEDED')} question runs)")
 
 
 def main() -> None:
