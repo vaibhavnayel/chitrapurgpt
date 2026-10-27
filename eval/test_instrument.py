@@ -121,6 +121,10 @@ def test_citation_analysis():
     hindi = analyze_citations("रथोत्सव [1]\n\n[1] Rhapsody, Sunbeam-1997-March पृष्ठ 7-10\n", seen)
     assert hindi["has_sources"] and not hindi["format_ok"] and not hindi["doc_grounded"]
     assert not analyze_citations("No sources here.", seen)["has_sources"]
+    comma = analyze_citations("x [1] [2]\n\nsources:\n[1] Rhapsody, Sunbeam-1997-March.txt, page 7-10\n"
+                              "[2] Guru-Parampara, Sunbeam-1960-July, page 25\n", seen)
+    assert not comma["format_ok"], "a comma before 'page' or a missing .txt isn't the prescribed format"
+    assert comma["doc_grounded"] and comma["title_grounded"] and comma["pages_grounded"], "but the sources are real"
 
 
 def test_parse_formatted_docs_matches_retrievers_format_docs():

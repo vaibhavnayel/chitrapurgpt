@@ -19,9 +19,20 @@ LEDGER = HERE / "results" / "spend_ledger.local.jsonl"
 
 SOURCES_HEADER = re.compile(r"(?im)^[ \t]*(?:#+[ \t]*)?\**[ \t]*(?:sources|references)[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$")
 SOURCE_LINE = re.compile(r"^\s*[-*]?\s*\[(\d+)\]\s*(.+?)\s*$")
-# `[n] <title>, <document> page <start>-<end>`; a single page ("page 10") is accepted as start == end.
-SOURCE_FORMAT = re.compile(r"^(?P<title>.+),\s+(?P<doc>\S+?)\s+page\s+(?P<p1>\d+(?:\.\d+)?)(?:\s*[-–]\s*(?P<p2>\d+(?:\.\d+)?))?\s*$",
+# The prescribed `[n] <title>, <document> page <start>-<end>`; a single page ("page 10") counts as start == end.
+SOURCE_FORMAT = re.compile(r"^(?P<title>.+),\s+(?P<doc>[^\s,]+)\s+page\s+(?P<p1>\d+(?:\.\d+)?)(?:\s*[-–]\s*(?P<p2>\d+(?:\.\d+)?))?\s*$",
                            re.I)
+# Looser parse used only to check grounding: tolerates "<document>, page", "pages", "pp." and a missing ".txt".
+SOURCE_LENIENT = re.compile(r"^(?P<title>.+),\s*(?P<doc>[^\s,]+?),?\s+(?:pages?|pp?\.)\s*(?P<p1>\d+(?:\.\d+)?)(?:\s*[-–]\s*(?P<p2>\d+(?:\.\d+)?))?",
+                            re.I)
+
+
+def parse_source_line(text: str):
+    return SOURCE_FORMAT.match(text) or SOURCE_LENIENT.match(text)
+
+
+def _doc(name) -> str:
+    return re.sub(r"\.txt$", "", _norm(name))
 INLINE = re.compile(r"\[(\d+(?:\s*[,–-]\s*\d+)*)\]")
 
 
@@ -70,14 +81,15 @@ def analyze_citations(answer: str, seen_docs: list[dict]) -> dict:
     lines = [m for m in (SOURCE_LINE.match(line) for line in tail.splitlines()) if m]
     indices = [int(m.group(1)) for m in lines]
     inline = sorted({i for m in INLINE.finditer(body) for i in _expand(m.group(1))})
-    parsed = [SOURCE_FORMAT.match(m.group(2)) for m in lines]
-    seen_sources = {_norm(d.get("source")) for d in seen_docs}
-    seen_titles = {(_norm(d.get("source")), _norm(d.get("title"))) for d in seen_docs}
-    seen_pages = {(_norm(d.get("source")), _page(d.get("start_page")), _page(d.get("end_page"))) for d in seen_docs}
-    keys = [(_norm(p["title"]), _norm(p["doc"])) if p else _norm(m.group(2)) for p, m in zip(parsed, lines)]
-    doc_ok = [bool(p) and _norm(p["doc"]) in seen_sources for p in parsed]
-    title_ok = [bool(p) and (_norm(p["doc"]), _norm(p["title"])) in seen_titles for p in parsed]
-    pages_ok = [bool(p) and (_norm(p["doc"]), _page(p["p1"]), _page(p["p2"] or p["p1"])) in seen_pages for p in parsed]
+    strict = [SOURCE_FORMAT.match(m.group(2)) for m in lines]
+    parsed = [parse_source_line(m.group(2)) for m in lines]
+    seen_sources = {_doc(d.get("source")) for d in seen_docs}
+    seen_titles = {(_doc(d.get("source")), _norm(d.get("title"))) for d in seen_docs}
+    seen_pages = {(_doc(d.get("source")), _page(d.get("start_page")), _page(d.get("end_page"))) for d in seen_docs}
+    keys = [(_norm(p["title"]), _doc(p["doc"])) if p else _norm(m.group(2)) for p, m in zip(parsed, lines)]
+    doc_ok = [bool(p) and _doc(p["doc"]) in seen_sources for p in parsed]
+    title_ok = [bool(p) and (_doc(p["doc"]), _norm(p["title"])) in seen_titles for p in parsed]
+    pages_ok = [bool(p) and (_doc(p["doc"]), _page(p["p1"]), _page(p["p2"] or p["p1"])) in seen_pages for p in parsed]
     n = len(lines)
     return {
         "has_sources": n > 0,
@@ -86,7 +98,7 @@ def analyze_citations(answer: str, seen_docs: list[dict]) -> dict:
         "n_inline": len(inline),
         "sequential": n > 0 and indices == list(range(1, n + 1)),
         "duplicates": n - len(set(keys)),
-        "format_ok": n > 0 and all(parsed),
+        "format_ok": n > 0 and all(strict),
         "inline_in_sources": set(inline) <= set(indices),
         "sources_cited_inline": set(indices) <= set(inline),
         "doc_grounded": n > 0 and all(doc_ok),

@@ -28,7 +28,7 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from pydantic import BaseModel, Field  # noqa: E402
 
 from pricing import cost_usd  # noqa: E402
-from report import SOURCE_FORMAT, SOURCE_LINE, split_sources  # noqa: E402
+from report import SOURCE_LINE, parse_source_line, split_sources  # noqa: E402
 
 # One doc in retrievers.format_docs output (the text the agent saw).
 DOC_RE_CONTENT = re.compile(r"(?ms)^(\d+)\. (?P<title>.*?)\n Metadata:\n(?P<meta>\{.*?\})\nContent:\n(?P<content>.*?)\n-{100}$")
@@ -78,9 +78,9 @@ def evidence(rec: dict, turn_index: int, answer: str) -> str:
     cited = set()
     for line in tail.splitlines():
         mm = SOURCE_LINE.match(line)
-        p = SOURCE_FORMAT.match(mm.group(2)) if mm else None
+        p = parse_source_line(mm.group(2)) if mm else None
         if p:
-            cited.add(p["doc"].lower())
+            cited.add(re.sub(r"\.txt$", "", p["doc"].lower()))
     ordered = sorted(docs, key=lambda d: not any(c in d[1].lower() for c in cited))
     out, total, seen = [], 0, set()
     for title, meta, content in ordered:

@@ -412,6 +412,8 @@ async def main() -> None:
     ap.add_argument("--exclude-done", action="store_true", help="skip ids already in --out (resume a run)")
     ap.add_argument("--app-dir", help="directory of the app checkout to run (default: this repo)")
     ap.add_argument("--site", help="extra package directory searched before the venv's site-packages")
+    ap.add_argument("--no-vector", action="store_true",
+                    help="fuzzy retrieval only (no embeddings calls); results aren't comparable with full runs")
     args = ap.parse_args()
     args.out = str(START_DIR / args.out)
     args.questions = str(START_DIR / args.questions)
@@ -423,6 +425,17 @@ async def main() -> None:
     t = time.perf_counter()
     import app  # noqa: F401  (builds the retrievers; same import the Chainlit server does)
     import_s = time.perf_counter() - t
+    if args.no_vector:
+        # Fuzzy matching only, for when the embeddings API is unavailable. NOT comparable with full runs.
+        import steps
+        from langchain_core.retrievers import BaseRetriever
+
+        class NoVector(BaseRetriever):
+            def _get_relevant_documents(self, query, *, run_manager):
+                return []
+
+        steps.retriever = steps.HybridRetriever(fuzzy_retriever=steps.fuzzy_retriever, vector_db_retriever=NoVector())
+        EVAL_SHIMS.append("no-vector-retrieval")
     info = stack_info(args.label)
     info["app_import_s"] = round(import_s, 1)
     print(f"[{args.label}] app imported in {import_s:.1f}s; running {len(questions)} questions", flush=True)
