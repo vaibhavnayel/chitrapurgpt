@@ -34,14 +34,16 @@ built with. Every model is an env setting, and the defaults are the production c
 
 | Env var | Default | Used for |
 |---|---|---|
-| `CGPT_MAIN_MODEL` | `claude-sonnet-5-5` | the agent |
-| `CGPT_MAIN_EFFORT` | `low` | the agent's thinking effort (`low`, `medium`, `high`, ...; chosen by the eval) |
-| `CGPT_QUERY_MODEL` | the main model | writing search queries |
+| `CGPT_MAIN_MODEL` | `claude-sonnet-5-5` | the agent (supervisor) |
+| `CGPT_MAIN_EFFORT` | by model: `claude-opus-*` → `high`, `claude-sonnet-*` → `xhigh` | the agent's thinking effort (optional override) |
+| `CGPT_QUERY_MODEL` | the main model (thinking effort `low`) | writing search queries |
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | reading each retrieved article |
+| `CGPT_READER_EFFORT` | `xhigh` | the readers' thinking effort (`off` turns their thinking off) |
 | `CGPT_READER_CONCURRENCY` | `40` | most reader calls in flight at once, for the whole process |
 | `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
 
-Sonnet 5.5 and Haiku 5.5 don't accept `temperature`; it is only set (to 0) for older models.
+Sonnet 5.5 and Haiku 5.5 don't accept `temperature`; it is only set (to 0) for older models. The OpenAI client
+honours the standard `OPENAI_BASE_URL` if embeddings are served from an OpenAI-compatible endpoint.
 
 ## Setup
 

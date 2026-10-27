@@ -1,9 +1,11 @@
 """Chat models used by ChitrapurGPT. Every model is an env setting; the defaults are the production choices.
 
-  CGPT_MAIN_MODEL         main agent                         claude-sonnet-5-5
-  CGPT_MAIN_EFFORT        main agent's thinking effort       low
-  CGPT_QUERY_MODEL        search query writer                CGPT_MAIN_MODEL
+  CGPT_MAIN_MODEL         main agent (supervisor)            claude-sonnet-5-5
+  CGPT_MAIN_EFFORT        its thinking effort                by model family: claude-opus-* -> high,
+                                                             claude-sonnet-* -> xhigh (so xhigh by default)
+  CGPT_QUERY_MODEL        search query writer                CGPT_MAIN_MODEL (thinking effort low)
   CGPT_READER_MODEL       per-document readers               claude-haiku-5-5
+  CGPT_READER_EFFORT      readers' thinking effort           xhigh ("off" turns their thinking off)
   CGPT_READER_CONCURRENCY max reader calls in flight         40   (whole process, across parallel searches)
   CGPT_INGEST_MODEL       ingest.py article boundaries       claude-sonnet-5-5
 
@@ -13,10 +15,21 @@ import os
 
 from langchain_anthropic import ChatAnthropic
 
+
+def supervisor_effort(model: str) -> str | None:
+    """Thinking effort for the main agent when CGPT_MAIN_EFFORT isn't set."""
+    if model.startswith("claude-opus-"):
+        return "high"
+    if model.startswith("claude-sonnet-"):
+        return "xhigh"
+    return None
+
+
 MAIN_MODEL = os.environ.get("CGPT_MAIN_MODEL", "claude-sonnet-5-5")
-MAIN_EFFORT = os.environ.get("CGPT_MAIN_EFFORT", "low")
+MAIN_EFFORT = os.environ.get("CGPT_MAIN_EFFORT") or supervisor_effort(MAIN_MODEL)
 QUERY_MODEL = os.environ.get("CGPT_QUERY_MODEL", MAIN_MODEL)
 READER_MODEL = os.environ.get("CGPT_READER_MODEL", "claude-haiku-5-5")
+READER_EFFORT = os.environ.get("CGPT_READER_EFFORT", "xhigh")
 READER_CONCURRENCY = int(os.environ.get("CGPT_READER_CONCURRENCY", "40"))
 INGEST_MODEL = os.environ.get("CGPT_INGEST_MODEL", "claude-sonnet-5-5")
 
@@ -42,8 +55,9 @@ def chat_model(model: str, *, max_tokens: int, effort: str | None = None, thinki
 
 
 def main_llm() -> ChatAnthropic:
-    # Thinking tokens count against max_tokens, so this is twice the old 8,000 to leave the answer the same room.
-    return chat_model(MAIN_MODEL, max_tokens=16000, effort=MAIN_EFFORT)
+    # Thinking tokens count against max_tokens, so leave room for xhigh thinking plus a long answer. Always
+    # streamed (the UI streams it anyway), which also lifts the SDK's cap on non-streaming max_tokens.
+    return chat_model(MAIN_MODEL, max_tokens=32000, effort=MAIN_EFFORT, streaming=True)
 
 
 def query_llm() -> ChatAnthropic:
@@ -53,4 +67,8 @@ def query_llm() -> ChatAnthropic:
 
 
 def reader_llm() -> ChatAnthropic:
-    return chat_model(READER_MODEL, max_tokens=8000, thinking=False, disable_streaming=True, tags=["nostream"])
+    # Thinking counts against max_tokens: 20,000 leaves xhigh thinking room for one article's extraction and stays
+    # under the Anthropic SDK's limit for a non-streaming call (~21k).
+    off = READER_EFFORT.lower() in ("", "off", "none")
+    return chat_model(READER_MODEL, max_tokens=20000, effort=None if off else READER_EFFORT, thinking=not off,
+                      disable_streaming=True, tags=["nostream"])
