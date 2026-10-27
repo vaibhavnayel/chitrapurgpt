@@ -31,9 +31,9 @@ See `docs/AGENT_DESIGN.md` for the design and `docs/PARITY.md` for the behaviour
 ## Models and settings
 
 Chat models are Anthropic; OpenAI is used only for the `text-embedding-3-large` embeddings the vector index was
-built with. Every model is an env setting. Production (Render) sets `CGPT_MAIN_EFFORT=medium` and
+built with. Every model is an env setting. Production (Render) sets `CGPT_MAIN_EFFORT=high` and
 `CGPT_READER_EFFORT=medium` (since 27 Oct 2026, for cost and speed); everything else runs on the defaults below.
-To go back to the higher-effort configuration, delete those two env vars on Render and redeploy.
+To go back to the code defaults (both `xhigh`), delete those two env vars on Render and redeploy.
 
 | Env var | Default | Used for |
 |---|---|---|
