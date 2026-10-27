@@ -136,7 +136,8 @@ class Collector(BaseCallbackHandler):
         model = (metadata or {}).get("ls_model_name") or params.get("model") or params.get("model_name")
         n_in = sum(len(batch) for batch in messages)
         self._start(run_id, parent_run_id, "llm", kwargs.get("name") or (serialized or {}).get("name"),
-                    model=model, schema=_structured_schema_name(kwargs, metadata), n_input_messages=n_in,
+                    model=model, model_canonical=canonical_model(model),
+                    schema=_structured_schema_name(kwargs, metadata), n_input_messages=n_in,
                     ls_provider=(metadata or {}).get("ls_provider"))
 
     def on_llm_start(self, serialized, prompts, *, run_id, parent_run_id=None, tags=None, metadata=None, **kwargs):

@@ -19,7 +19,8 @@ LEDGER = HERE / "results" / "spend_ledger.local.jsonl"
 
 SOURCES_HEADER = re.compile(r"(?im)^[ \t]*(?:#+[ \t]*)?\**[ \t]*(?:sources|references)[ \t]*:?[ \t]*\**[ \t]*:?[ \t]*$")
 SOURCE_LINE = re.compile(r"^\s*[-*]?\s*\[(\d+)\]\s*(.+?)\s*$")
-SOURCE_FORMAT = re.compile(r"^(?P<title>.+),\s+(?P<doc>\S+?)\s+page\s+(?P<p1>\d+(?:\.\d+)?)\s*[-–]\s*(?P<p2>\d+(?:\.\d+)?)\s*$",
+# `[n] <title>, <document> page <start>-<end>`; a single page ("page 10") is accepted as start == end.
+SOURCE_FORMAT = re.compile(r"^(?P<title>.+),\s+(?P<doc>\S+?)\s+page\s+(?P<p1>\d+(?:\.\d+)?)(?:\s*[-–]\s*(?P<p2>\d+(?:\.\d+)?))?\s*$",
                            re.I)
 INLINE = re.compile(r"\[(\d+(?:\s*[,–-]\s*\d+)*)\]")
 
@@ -46,14 +47,26 @@ def _page(p) -> str:
         return str(p)
 
 
+def split_sources(answer: str) -> tuple[str, str, bool]:
+    """(body, sources block, english_header). Uses the last "sources:" header; otherwise a trailing block of
+    `[n] ...` lines, optionally under a header line in another language (e.g. "**ಮೂಲಗಳು:**")."""
+    headers = list(SOURCES_HEADER.finditer(answer))
+    if headers:
+        return answer[: headers[-1].start()], answer[headers[-1].end():], True
+    lines = answer.rstrip().splitlines()
+    i = len(lines)
+    while i > 0 and (SOURCE_LINE.match(lines[i - 1]) or not lines[i - 1].strip()):
+        i -= 1
+    if i == len(lines):
+        return answer, "", False
+    j = i - 1 if i > 0 and lines[i - 1].strip().strip("*#").strip().endswith(":") else i
+    return "\n".join(lines[:j]), "\n".join(lines[i:]), False
+
+
 def analyze_citations(answer: str, seen_docs: list[dict]) -> dict:
     """Citation checks against the system prompt's rules and against the docs the agent actually saw."""
     answer = answer or ""
-    headers = list(SOURCES_HEADER.finditer(answer))
-    if headers:
-        body, tail = answer[: headers[-1].start()], answer[headers[-1].end():]
-    else:
-        body, tail = answer, ""
+    body, tail, english_header = split_sources(answer)
     lines = [m for m in (SOURCE_LINE.match(line) for line in tail.splitlines()) if m]
     indices = [int(m.group(1)) for m in lines]
     inline = sorted({i for m in INLINE.finditer(body) for i in _expand(m.group(1))})
@@ -64,10 +77,11 @@ def analyze_citations(answer: str, seen_docs: list[dict]) -> dict:
     keys = [(_norm(p["title"]), _norm(p["doc"])) if p else _norm(m.group(2)) for p, m in zip(parsed, lines)]
     doc_ok = [bool(p) and _norm(p["doc"]) in seen_sources for p in parsed]
     title_ok = [bool(p) and (_norm(p["doc"]), _norm(p["title"])) in seen_titles for p in parsed]
-    pages_ok = [bool(p) and (_norm(p["doc"]), _page(p["p1"]), _page(p["p2"])) in seen_pages for p in parsed]
+    pages_ok = [bool(p) and (_norm(p["doc"]), _page(p["p1"]), _page(p["p2"] or p["p1"])) in seen_pages for p in parsed]
     n = len(lines)
     return {
-        "has_sources": bool(headers) and n > 0,
+        "has_sources": n > 0,
+        "english_sources_header": english_header,
         "n_sources": n,
         "n_inline": len(inline),
         "sequential": n > 0 and indices == list(range(1, n + 1)),
@@ -146,7 +160,7 @@ def summarize(recs: list[dict]) -> dict:
     by_model = defaultdict(lambda: Counter())
     for m in llm_turns:
         for c in m["llm_calls"]:
-            k = by_model[c.get("model_canonical") or "?"]
+            k = by_model[c.get("model_canonical") or ("(errored call)" if c.get("error") else "?")]
             k["calls"] += 1
             for f in ("input_tokens", "output_tokens", "cache_read", "reasoning_tokens"):
                 k[f] += c.get(f) or 0

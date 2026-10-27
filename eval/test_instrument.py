@@ -105,6 +105,24 @@ def test_streamed_text_reconstruction():
     assert steps[0]["streamed"] == "Hello world" == steps[0]["output"]
 
 
+def test_citation_analysis():
+    from report import analyze_citations
+    seen = [{"source": "Sunbeam-1997-March.txt", "title": "Rhapsody", "start_page": 7, "end_page": 10},
+            {"source": "Sunbeam-1960-July.txt", "title": "Guru-Parampara", "start_page": 25.0, "end_page": 25.0}]
+    ok = analyze_citations("It was held at Shirali [1], see also [2].\n\nsources:\n"
+                           "[1] Rhapsody, Sunbeam-1997-March.txt page 7-10\n"
+                           "[2] Guru-Parampara, Sunbeam-1960-July.txt page 25\n", seen)
+    assert ok["format_ok"] and ok["sequential"] and ok["pages_grounded"] and ok["english_sources_header"]
+    assert ok["duplicates"] == 0 and ok["sources_cited_inline"]
+    local = analyze_citations("ಮಠ [1] [3].\n\n**ಮೂಲಗಳು:**\n[1] Rhapsody, Sunbeam-1997-March.txt page 7-10\n"
+                              "[3] Rhapsody, Sunbeam-1997-March.txt page 7-10\n", seen)
+    assert local["has_sources"] and not local["english_sources_header"]
+    assert not local["sequential"] and local["duplicates"] == 1
+    hindi = analyze_citations("रथोत्सव [1]\n\n[1] Rhapsody, Sunbeam-1997-March पृष्ठ 7-10\n", seen)
+    assert hindi["has_sources"] and not hindi["format_ok"] and not hindi["doc_grounded"]
+    assert not analyze_citations("No sources here.", seen)["has_sources"]
+
+
 def test_parse_formatted_docs_matches_retrievers_format_docs():
     from retrievers import format_docs
     docs = [Document(page_content="abc", metadata={"title": "T1", "source": "S.txt", "start_page": 3, "end_page": 4}),
