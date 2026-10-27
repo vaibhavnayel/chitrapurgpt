@@ -257,6 +257,8 @@ def summarize_turn(collector: Collector, events: list, mark: int, turn: int, t0:
         "time_to_visible_answer_s": round(min(visible_t) - t0, 3) if visible_t else None,
         "answer": answer,
         "answer_tags": sorted({tag for s in assistant for tag in (s.get("tags") or [])}),
+        # the answer mode the app says it used (saved with the answer's step), for Detailed / Quick runs
+        "answer_mode": next((m for s in assistant if (m := (s.get("metadata") or {}).get("cgpt_answer_mode"))), None),
         "n_assistant_messages": len(assistant),
         "streamed_equals_saved": (streamed[-1] == assistant[-1].get("output")) if streamed else None,
         "raw_final_llm_text": raw_final,
@@ -336,7 +338,10 @@ def make_elements(files: list[dict], tmpdir: Path) -> list:
     return elements
 
 
-async def run_question(q: dict, app, label: str, kb: KBFreshness | None, timeout_s: float) -> dict:
+async def run_question(q: dict, app, label: str, kb: KBFreshness | None, timeout_s: float,
+                       modes: dict | None = None) -> dict:
+    """`modes` (e.g. {"answer": "quick"}) is sent with every message, as the chat composer's pickers would;
+    a turn's own "modes" overrides it."""
     import chainlit as cl
     from chainlit.chat_context import chat_context
     from langsmith.run_helpers import tracing_context
@@ -375,7 +380,7 @@ async def run_question(q: dict, app, label: str, kb: KBFreshness | None, timeout
                     msg = m
         else:
             msg = cl.Message(content=turn["content"], author="User", type="user_message",
-                             command=turn.get("command"))
+                             command=turn.get("command"), modes=turn.get("modes") or modes)
             await msg.send()
             if turn.get("files"):
                 msg.elements = make_elements(turn["files"], tmpdir)
@@ -403,6 +408,7 @@ async def run_question(q: dict, app, label: str, kb: KBFreshness | None, timeout
         "id": q["id"], "source": q.get("source"), "category": q.get("category"), "label": label,
         "started_at": started,
         "questions": [t.get("content") for t in q["turns"]],
+        "modes_sent": [t.get("modes") or modes for t in q["turns"]],
         "turns": turns,
         "history_after": history,
         "kb_docs_mutated": kb.mutated() if kb else None,
@@ -444,10 +450,16 @@ async def main() -> None:
     ap.add_argument("--exclude-done", action="store_true", help="skip ids already in --out (resume a run)")
     ap.add_argument("--app-dir", help="directory of the app checkout to run (default: this repo)")
     ap.add_argument("--site", help="extra package directory searched before the venv's site-packages")
+    ap.add_argument("--modes", default="",
+                    help="chat-composer modes sent with every message, e.g. answer=quick (comma-separated id=option)")
     ap.add_argument("--no-vector", action="store_true",
                     help="fuzzy retrieval only (no embeddings calls); results aren't comparable with full runs")
     args = ap.parse_args()
     args.out = str(START_DIR / args.out)
+    try:
+        modes = dict(pair.split("=", 1) for pair in args.modes.split(",") if pair.strip()) or None
+    except ValueError:
+        sys.exit(f"--modes takes id=option pairs, e.g. answer=quick (got {args.modes!r})")
     args.questions = str(START_DIR / args.questions)
 
     questions = load_questions(args)
@@ -468,6 +480,7 @@ async def main() -> None:
     info["app_import_s"] = round(import_s, 1)
     info["vector_db"] = vector_db
     info["vector_ef_search"] = os.environ.get("CGPT_VECTOR_EF_SEARCH") or "default"
+    info["modes"] = modes
     print(f"[{args.label}] app imported in {import_s:.1f}s; running {len(questions)} questions", flush=True)
     kb = KBFreshness() if args.concurrency == 1 else None
 
@@ -482,7 +495,7 @@ async def main() -> None:
                     print(f"  skip {q['id']}: budget {args.budget_usd} reached", flush=True)
                     return
                 try:
-                    rec = await run_question(q, app, args.label, kb, args.timeout_s)
+                    rec = await run_question(q, app, args.label, kb, args.timeout_s, modes=modes)
                 except Exception:  # noqa: BLE001
                     print(f"  {q['id']}: HARNESS ERROR\n{traceback.format_exc(limit=6)}", flush=True)
                     return

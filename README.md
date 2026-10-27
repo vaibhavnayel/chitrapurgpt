@@ -8,6 +8,7 @@ base of ~5,900 magazine articles (Chitrapur Sunbeam), with citations. Built on C
 - Chat interface powered by Chainlit, with Google sign-in and an allow-list managed at `/admin`
 - An agent that searches the knowledge base (several searches at once when useful), reads each retrieved article
   for the question, and answers with Wikipedia-style citations; the answer streams as it is written
+- A Detailed / Quick answer picker in the chat composer: Quick gives a shorter answer sooner, from fewer searches
 - Hybrid search: fuzzy and phonetic matching over the articles plus vector search in Postgres (pgvector)
 - Translation and transliteration, and reading files you attach (images, PDFs, Word, Excel, CSV, text)
 - Exact Search and Fuzzy Search commands for boolean keyword search (no LLM)
@@ -39,11 +40,22 @@ To go back to the code defaults (both `xhigh`), delete those two env vars on Ren
 |---|---|---|
 | `CGPT_MAIN_MODEL` | `claude-sonnet-5-5` | the agent (supervisor) |
 | `CGPT_MAIN_EFFORT` | by model: `claude-opus-*` → `high`, `claude-sonnet-*` → `xhigh` | the agent's thinking effort (optional override) |
+| `CGPT_DETAILED_EFFORT` | `CGPT_MAIN_EFFORT` (or its by-model default) | the agent's thinking effort for Detailed answers |
+| `CGPT_QUICK_EFFORT` | `medium` | the agent's thinking effort for Quick answers |
 | `CGPT_QUERY_MODEL` | the main model (thinking effort `low`) | writing search queries |
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | reading each retrieved article |
 | `CGPT_READER_EFFORT` | `xhigh` | the readers' thinking effort (`off` turns their thinking off) |
 | `CGPT_READER_CONCURRENCY` | `40` | most reader calls in flight at once, for the whole process |
 | `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
+
+**Answer modes.** The chat composer's Answer picker offers Detailed (preselected) and Quick. Detailed is the agent
+exactly as configured above. Quick runs the agent at `CGPT_QUICK_EFFORT`, with one extra prompt line asking for a
+concise answer, searching only as much as it needs and citing sources in the same format. The readers, the query
+writer and everything else are the same in both. With production's settings, Detailed runs at `high` and Quick at
+`medium`. To change either effort, set its env var on Render and redeploy. Which option is preselected is set in
+`steps.answer_modes()`. Each answer records its mode: the `answer_mode` LangSmith metadata and tag, and
+`cgpt_answer_mode` in the saved message's metadata. Chainlit doesn't save the picker's state, so editing a message
+in a reopened chat answers it in Detailed.
 
 Sonnet 5.5 and Haiku 5.5 don't accept `temperature`; it is only set (to 0) for older models. The OpenAI client
 honours the standard `OPENAI_BASE_URL` if embeddings are served from an OpenAI-compatible endpoint.
@@ -124,7 +136,8 @@ With real models (small API cost):
 E2E_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_e2e .venv/bin/python tests/e2e/run_e2e.py   # ~$0.5
 ```
 The E2E test starts a real Chainlit server on a throwaway local Postgres, signs in with a locally minted JWT and
-drives it over socket.io (streaming, saved messages, steps, uploads, commands, edit, resume, `/admin`). Vector search
+drives it over socket.io (streaming, saved messages, steps, uploads, commands, edit, Detailed / Quick answer modes,
+resume, `/admin`). Vector search
 goes to the local copy (`VECTOR_DATABASE_URL`, required). Add `--no-llm` to check only the server, sign-in, socket
 and database plumbing.
 
@@ -136,7 +149,7 @@ blind pairwise judge. See `eval/README.md`. Real user questions and results stay
 
 ```bash
 .venv/bin/python eval/build_questions.py
-.venv/bin/python eval/run_eval.py --label new --out eval/results/new.local.jsonl
+.venv/bin/python eval/run_eval.py --label new --out eval/results/new.local.jsonl   # --modes answer=quick: Quick answers
 .venv/bin/python eval/report.py eval/results/baseline.local.jsonl eval/results/new.local.jsonl
 .venv/bin/python eval/judge.py eval/results/baseline.local.jsonl eval/results/new.local.jsonl --out eval/results/judge.local.jsonl
 ```

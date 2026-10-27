@@ -3,6 +3,8 @@
   CGPT_MAIN_MODEL         main agent (supervisor)            claude-sonnet-5-5
   CGPT_MAIN_EFFORT        its thinking effort                by model family: claude-opus-* -> high,
                                                              claude-sonnet-* -> xhigh (so xhigh by default)
+  CGPT_DETAILED_EFFORT    its effort for "Detailed" answers  CGPT_MAIN_EFFORT (so Detailed = the above)
+  CGPT_QUICK_EFFORT       its effort for "Quick" answers     medium
   CGPT_QUERY_MODEL        search query writer                CGPT_MAIN_MODEL (thinking effort low)
   CGPT_READER_MODEL       per-document readers               claude-haiku-5-5
   CGPT_READER_EFFORT      readers' thinking effort           xhigh ("off" turns their thinking off)
@@ -27,6 +29,9 @@ def supervisor_effort(model: str) -> str | None:
 
 MAIN_MODEL = os.environ.get("CGPT_MAIN_MODEL", "claude-sonnet-5-5")
 MAIN_EFFORT = os.environ.get("CGPT_MAIN_EFFORT") or supervisor_effort(MAIN_MODEL)
+# The chat UI's answer-mode picker (steps.ANSWER_MODES): Detailed is the supervisor as configured above.
+DETAILED_EFFORT = os.environ.get("CGPT_DETAILED_EFFORT") or MAIN_EFFORT
+QUICK_EFFORT = os.environ.get("CGPT_QUICK_EFFORT") or "medium"
 QUERY_MODEL = os.environ.get("CGPT_QUERY_MODEL", MAIN_MODEL)
 READER_MODEL = os.environ.get("CGPT_READER_MODEL", "claude-haiku-5-5")
 READER_EFFORT = os.environ.get("CGPT_READER_EFFORT", "xhigh")
@@ -54,10 +59,10 @@ def chat_model(model: str, *, max_tokens: int, effort: str | None = None, thinki
     return ChatAnthropic(model=model, max_tokens=max_tokens, **kwargs)
 
 
-def main_llm() -> ChatAnthropic:
+def main_llm(effort: str | None = None) -> ChatAnthropic:
     # Thinking tokens count against max_tokens, so leave room for xhigh thinking plus a long answer. Always
     # streamed (the UI streams it anyway), which also lifts the SDK's cap on non-streaming max_tokens.
-    return chat_model(MAIN_MODEL, max_tokens=32000, effort=MAIN_EFFORT, streaming=True)
+    return chat_model(MAIN_MODEL, max_tokens=32000, effort=effort or MAIN_EFFORT, streaming=True)
 
 
 def query_llm() -> ChatAnthropic:

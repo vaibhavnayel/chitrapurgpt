@@ -71,6 +71,7 @@ async def on_chat_start():
         return
     cl.user_session.set("messages", [])
     await cl.context.emitter.set_commands(commands)
+    await cl.context.emitter.set_modes(steps.answer_modes())  # the Detailed / Quick picker
 
 @cl.on_chat_resume
 async def on_chat_resume(thread: ThreadDict):
@@ -78,6 +79,7 @@ async def on_chat_resume(thread: ThreadDict):
         return
     cl.user_session.set("messages", steps.history_from_thread(thread))
     await cl.context.emitter.set_commands(commands)
+    await cl.context.emitter.set_modes(steps.answer_modes())
 
 
 @cl.on_message

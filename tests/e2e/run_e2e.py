@@ -3,13 +3,15 @@
 Starts `chainlit run app.py` against a throwaway local Postgres (E2E_DATABASE_URL, wiped), signs in with a JWT
 minted here from a freshly generated CHAINLIT_AUTH_SECRET (no auth bypass in the app), and drives it with a
 socket.io client like the browser does. Checks:
-  1. a new chat streams its answer, and the saved message equals what was displayed
+  1. a new chat offers the Detailed / Quick picker and streams its answer (Detailed by default), and the saved
+     message equals what was displayed
   2. steps are persisted with the right names and nesting
   3. a PDF and an image upload are used in the answer
   4. Exact Search and Fuzzy Search are unchanged
   5. editing a message truncates the agent's history
-  6. resuming a thread works and the agent remembers the conversation
-  7. /admin's chat viewer renders a new-stack thread
+  6. a Quick-mode message runs the quick agent, streams and saves normally, and keeps its mode when edited
+  7. resuming a thread works (the picker is offered again) and the agent remembers the conversation
+  8. /admin's chat viewer renders a new-stack thread
 
   .venv/bin/python tests/e2e/run_e2e.py              # add --no-llm for plumbing only, --no-vector for fuzzy-only retrieval
 """
@@ -131,14 +133,15 @@ class Chat:
             r.raise_for_status()
             return r.json()["id"]
 
-    async def send(self, text: str, command: str | None = None, files=()) -> tuple[str, list]:
+    async def send(self, text: str, command: str | None = None, files=(), modes: dict | None = None) -> tuple[str, list]:
         refs = [{"id": await self.upload(p, m)} for p, m in files]
         mark = len(self.events)
         mid = str(uuid.uuid4())
         t0 = time.perf_counter()
         await self.sio.emit("client_message", {"message": {
             "id": mid, "threadId": self.thread_id or "", "type": "user_message", "name": EMAIL, "output": text,
-            "createdAt": datetime.now(timezone.utc).isoformat(), "command": command}, "fileReferences": refs})
+            "createdAt": datetime.now(timezone.utc).isoformat(), "command": command, "modes": modes},
+            "fileReferences": refs})
         await self.wait_for("task_end", since=mark)
         return mid, [(t - t0, e, d) for t, e, d in self.events[mark:]]
 
@@ -171,6 +174,24 @@ def answers(events) -> list[dict]:
         elif event == "delete_message" and data.get("id") in msgs:
             msgs.pop(data["id"])
     return list(msgs.values())
+
+
+QUICK = {"answer": "quick"}
+ANSWER_PICKER = {"answer": (["detailed", "quick"], "detailed")}
+
+
+def offered_modes(events) -> dict:
+    """The composer pickers the server last offered: {mode id: ([option ids], default option id)}."""
+    for _, event, data in reversed(events):
+        if event == "set_modes":
+            return {m["id"]: ([o["id"] for o in m["options"]], next((o["id"] for o in m["options"] if o["default"]), None))
+                    for m in data}
+    return {}
+
+
+def answer_modes(rows) -> list:
+    """The answer mode saved with each assistant message."""
+    return [json.loads(r["metadata"] or "{}").get("cgpt_answer_mode") for r in rows if r["type"] == "assistant_message"]
 
 
 async def db_steps(thread_id: str) -> list[dict]:
@@ -214,9 +235,11 @@ async def main():
         if "--no-llm" in sys.argv:  # server, auth, socket and database plumbing only (no model or embedding calls)
             chat = Chat(token)
             await chat.connect()
+            check("answer modes offered on chat start", offered_modes(chat.events) == ANSWER_PICKER,
+                  str(offered_modes(chat.events)))
             import search_engine
             for command, query in (("Exact Search", "Rathotsava"), ("Fuzzy Search", "rathotsava AND shirali")):
-                _, ev = await chat.send(query, command=command)
+                _, ev = await chat.send(query, command=command, modes=QUICK)  # commands ignore the answer mode
                 (m,) = answers(ev)
                 expected = search_engine.search_knowledge_base(query, exact=command == "Exact Search")
                 check(f"{command} unchanged", m["final"] == expected and m["data"].get("tags") == ["command_output"])
@@ -233,6 +256,8 @@ async def main():
         # 1-2. a new chat: streaming, saved == displayed, steps
         chat = Chat(token)
         await chat.connect()
+        check("answer modes offered on chat start", offered_modes(chat.events) == ANSWER_PICKER,
+              str(offered_modes(chat.events)))
         _, ev = await chat.send("When was the Rathotsava revived at Shirali? Answer briefly.")
         (a,) = answers(ev)
         check("answer streamed", bool(a["streamed"]) and a["first_token_s"] is not None,
@@ -242,6 +267,7 @@ async def main():
         rows = await db_steps(thread_id)
         saved = [r for r in rows if r["type"] == "assistant_message"]
         check("saved message == displayed", len(saved) == 1 and saved[0]["output"] == a["final"])
+        check("no mode sent -> Detailed", answer_modes(rows) == ["detailed"], str(answer_modes(rows)))
         engines = [r for r in rows if r["name"] == "knowledge base search engine"]
         nested = all([c["name"] for c in rows if c["parentId"] == e["id"]] == ["search query generator", "document analysis"]
                      for e in engines)
@@ -276,17 +302,36 @@ async def main():
         check("edit truncates history", "ravi" not in reply.lower(), reply[:120].replace("\n", " "))
         await edit_chat.close()
 
-        # 6. resume chat 1 in a new connection
+        # 6. Quick answer mode: streams and saves like Detailed; an edited message keeps its mode
+        quick_chat = Chat(token)
+        await quick_chat.connect()
+        first, ev = await quick_chat.send("What is Kojagiri Pournima and how is it celebrated?", modes=QUICK)
+        (q,) = answers(ev)
+        rows = await db_steps(quick_chat.thread_id)
+        saved = [r for r in rows if r["type"] == "assistant_message"]
+        check("Quick answer streamed, displayed == saved",
+              bool(q["streamed"]) and q["streamed"] == q["final"] and len(saved) == 1 and saved[0]["output"] == q["final"],
+              f"turn {ev[-1][0]:.1f}s, {len(q['final'] or '')} chars")
+        check("Quick mode ran the quick agent", answer_modes(rows) == ["quick"], str(answer_modes(rows)))
+        ev = await quick_chat.edit(first, "What is Hari Jagara?")
+        rows = await db_steps(quick_chat.thread_id)
+        check("edit keeps the Quick mode", answer_modes(rows) == ["quick"] and any(m["final"] for m in answers(ev)),
+              str(answer_modes(rows)))
+        await quick_chat.close()
+
+        # 7. resume chat 1 in a new connection
         await chat.close()
         resumed = Chat(token, thread_id=thread_id)
         await resumed.connect()
         check("thread resumed", any(e == "resume_thread" for _, e, _ in resumed.events))
+        check("answer modes offered on resume", offered_modes(resumed.events) == ANSWER_PICKER,
+              str(offered_modes(resumed.events)))
         _, ev = await resumed.send("In a few words: what festival did I ask about first in this chat?")
         reply = (answers(ev)[-1]["final"] or "")
         check("agent remembers after resume", "rathotsava" in reply.lower(), reply[:120].replace("\n", " "))
         await resumed.close()
 
-        # 7. admin chat viewer
+        # 8. admin chat viewer
         async with httpx.AsyncClient(base_url=BASE, cookies={"access_token": token}) as client:
             r = await client.get(f"/admin/chat/{thread_id}")
             snippet = html.escape(a["final"].strip()[:60])

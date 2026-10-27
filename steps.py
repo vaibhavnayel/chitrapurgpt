@@ -77,9 +77,42 @@ sources:
     """
 
 
-def system_prompt(now: datetime | None = None) -> str:
-    """Built for every model call, so the date is today's, not the deploy's."""
-    return SYSTEM_PROMPT.replace("{today}", (now or datetime.now()).strftime("%B %d, %Y"))
+# ---------------- answer modes (the "Answer" picker in the chat composer) ----------------
+
+DETAILED, QUICK = "detailed", "quick"
+ANSWER_MODE_ID = "answer"
+# Supervisor thinking effort per mode (readers are the same in both: CGPT_READER_EFFORT).
+ANSWER_MODE_EFFORT = {DETAILED: models.DETAILED_EFFORT, QUICK: models.QUICK_EFFORT}
+QUICK_INSTRUCTION = ("The user wants a quick answer: keep it concise (a short paragraph or a few bullet points) and "
+                     "search the knowledge base only as much as you need to answer correctly. Still cite your "
+                     "sources in exactly the same format.")
+_QUICK_ANCHOR = "Don't use your own knowledge to answer the question."
+assert SYSTEM_PROMPT.count(_QUICK_ANCHOR) == 1
+
+
+def answer_modes() -> list[cl.Mode]:
+    """The picker offered on chat start and resume. Detailed is the default."""
+    return [cl.Mode(id=ANSWER_MODE_ID, name="Answer", options=[
+        cl.ModeOption(id=DETAILED, name="Detailed", description="Thorough research, more sources; slower",
+                      icon="book-open", default=True),
+        cl.ModeOption(id=QUICK, name="Quick", description="Faster, shorter answer", icon="zap"),
+    ])]
+
+
+def answer_mode(message) -> str:
+    """The mode a message was sent with. No modes (older clients, reopened chats, the eval) or an unknown value
+    means Detailed."""
+    value = (getattr(message, "modes", None) or {}).get(ANSWER_MODE_ID)
+    return value if value in ANSWER_MODE_EFFORT else DETAILED
+
+
+def system_prompt(now: datetime | None = None, mode: str = DETAILED) -> str:
+    """Built for every model call, so the date is today's, not the deploy's. Quick adds one instruction line;
+    Detailed is the prompt as it always was."""
+    prompt = SYSTEM_PROMPT.replace("{today}", (now or datetime.now()).strftime("%B %d, %Y"))
+    if mode == QUICK:
+        prompt = prompt.replace(_QUICK_ANCHOR, f"{_QUICK_ANCHOR}\n{QUICK_INSTRUCTION}")
+    return prompt
 
 
 # ---------------- the search tool ----------------
@@ -199,17 +232,24 @@ def _todays_system_prompt(request) -> str:
     return system_prompt()
 
 
+@dynamic_prompt
+def _todays_quick_system_prompt(request) -> str:
+    return system_prompt(mode=QUICK)
+
+
 def _model_key(model: BaseChatModel) -> str:
     provider = (model._get_ls_params() or {}).get("ls_provider")
     name = getattr(model, "model_name", None) or getattr(model, "model", None)
     return f"{provider}:{name}"
 
 
-def build_agent(model: BaseChatModel | None = None, tools: list | None = None, model_call_limit: int = 15):
+def build_agent(model: BaseChatModel | None = None, tools: list | None = None, model_call_limit: int = 15,
+                mode: str = DETAILED):
     """The main agent. Deep Agents provides the loop, parallel tool calls, repair of dangling tool calls (a turn
     that died mid-way can't wedge the chat) and Anthropic prompt caching. Its filesystem tools, general-purpose
-    subagent and summarisation are switched off: the model sees one tool and exactly our system prompt."""
-    model = model or models.main_llm()
+    subagent and summarisation are switched off: the model sees one tool and exactly our system prompt.
+    `mode` sets the supervisor's thinking effort and prompt (answer modes above); Detailed is the agent as before."""
+    model = model or models.main_llm(effort=ANSWER_MODE_EFFORT[mode])
     register_harness_profile(_model_key(model), HarnessProfile(
         excluded_tools=frozenset({"read_file"}),
         excluded_middleware=frozenset({"SummarizationMiddleware"}),
@@ -218,27 +258,26 @@ def build_agent(model: BaseChatModel | None = None, tools: list | None = None, m
     return create_deep_agent(
         model=model,
         tools=tools if tools is not None else [search_knowledge_base],
-        name="chitrapurgpt",
+        name="chitrapurgpt" if mode == DETAILED else f"chitrapurgpt-{mode}",
         middleware=[
             # Filesystem scaffolding can't be removed. Keep only read_file (hidden above) and turn off the
             # eviction that would swap large tool results or messages for a file pointer the model can't read.
             FilesystemMiddleware(tools=["read_file"], tool_token_limit_before_evict=None,
                                  human_message_token_limit_before_evict=None),
-            _todays_system_prompt,
+            _todays_system_prompt if mode == DETAILED else _todays_quick_system_prompt,
             # A safety net: the old loop had no cap. Real turns use far fewer (at most 9 seen in the eval).
             ModelCallLimitMiddleware(run_limit=model_call_limit),
         ],
     )
 
 
-_agent = None
+_agents: dict[str, object] = {}  # one per answer mode, built on first use (prompt caching then works per mode)
 
 
-def get_agent():
-    global _agent
-    if _agent is None:
-        _agent = build_agent()
-    return _agent
+def get_agent(mode: str = DETAILED):
+    if mode not in _agents:
+        _agents[mode] = build_agent(mode=mode)
+    return _agents[mode]
 
 
 # ---------------- final answer extraction and streaming ----------------
@@ -304,8 +343,9 @@ class AnswerStream:
     """Streams the main model's final-answer text into one Chainlit message. finish() makes the message equal
     final_answer_text(<the last reply>), so what's saved is always what's shown."""
 
-    def __init__(self) -> None:
+    def __init__(self, metadata: dict | None = None) -> None:
         self.msg: cl.Message | None = None
+        self.metadata = metadata  # saved with the answer's step
         self._call = None
         self._extractor = FinalAnswerExtractor()
         self._streaming_call = None
@@ -318,14 +358,14 @@ class AnswerStream:
         if not out:
             return
         if self.msg is None:
-            self.msg = cl.Message(content="")
+            self.msg = cl.Message(content="", metadata=self.metadata)
         # A later model call writing a new final answer replaces the earlier one.
         await self.msg.stream_token(out, is_sequence=self._streaming_call not in (None, call))
         self._streaming_call = call
 
     async def finish(self, text: str) -> cl.Message:
         if self.msg is None:
-            self.msg = cl.Message(content=text)
+            self.msg = cl.Message(content=text, metadata=self.metadata)
         else:
             self.msg.content = text
         await self.msg.send()
@@ -340,20 +380,24 @@ class AnswerStream:
 # ---------------- one turn ----------------
 
 async def respond(history: list[BaseMessage], message: cl.Message) -> list[BaseMessage]:
-    """Run the agent on `message` after `history`; stream and send the answer; return the new history.
-    If the turn fails, the exception propagates (Chainlit shows it) and the caller keeps the old history."""
+    """Run the agent on `message` after `history`, using the answer mode the message was sent with; stream and
+    send the answer; return the new history. If the turn fails, the exception propagates and the caller keeps
+    the old history."""
     content, notes = await asyncio.to_thread(uploads.to_content, message.content, list(message.elements or []))
     for note in notes:
         await cl.Message(content=note, metadata=dict(UPLOAD_NOTE)).send()
     human = HumanMessage(content=content, id=message.id)
-    answer = AnswerStream()
+    mode_name = answer_mode(message)
+    answer = AnswerStream(metadata={"cgpt_answer_mode": mode_name})
     state = None
     try:
-        async for mode, data in get_agent().astream(
+        async for mode, data in get_agent(mode_name).astream(
                 {"messages": [*history, human]},
                 stream_mode=["messages", "values"],
                 config={"run_name": "ChitrapurGPT turn", "recursion_limit": 60,
-                        "metadata": {"thread_id": getattr(cl.context.session, "thread_id", None)}}):
+                        "tags": [f"answer_mode:{mode_name}"],
+                        "metadata": {"thread_id": getattr(cl.context.session, "thread_id", None),
+                                     "answer_mode": mode_name}}):
             if mode == "messages":
                 chunk, meta = data
                 if meta.get("langgraph_node") == "model":

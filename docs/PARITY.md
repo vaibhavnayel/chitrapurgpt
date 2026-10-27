@@ -226,6 +226,22 @@ Today `on_message` ignores `message.elements`: the agent never sees uploads, and
 skipped on the baseline for that reason. New behaviour, tested by `edge-upload-pdf` and `edge-upload-image-csv` plus
 unit tests per type, is specified in `docs/AGENT_DESIGN.md`.
 
+## 17. Answer modes (Phase D: new, opt-in)
+
+The composer now has a Detailed / Quick picker (`docs/AGENT_DESIGN.md` §15). Parity applies to Detailed, which is
+preselected and is also used when a message carries no mode or an unknown one. Detailed is today's agent unchanged:
+the same prompt, tools, call limit and settings, with supervisor effort `CGPT_DETAILED_EFFORT`, which defaults to
+`CGPT_MAIN_EFFORT`. A unit test compares its model settings with the pre-change ones, and every existing test runs in
+Detailed.
+
+Quick is a deliberate difference, only when the user picks it:
+- lower supervisor effort (`CGPT_QUICK_EFFORT`, default `medium`);
+- one extra prompt line: be concise and search only as needed, citing in the same format.
+
+Commands (7), edits (9), history (3) and steps (5) behave the same in both modes. An edit keeps the edited message's
+mode, but Chainlit doesn't save modes, so in a reopened chat an edit runs Detailed. Tested in `tests/test_agent.py`
+and in the E2E.
+
 ---
 
 ## Decisions to confirm (bug fixes beyond strict parity)

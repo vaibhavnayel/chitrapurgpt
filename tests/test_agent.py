@@ -50,14 +50,16 @@ def fake_tool_models(monkeypatch):
     reader = FakeStructured(passages_for, delay=0.01)
     monkeypatch.setattr(steps, "query_llm", lambda: queries)
     monkeypatch.setattr(steps, "reader_llm", lambda: reader)
-    monkeypatch.setattr(steps, "_agent", None)
+    monkeypatch.setattr(steps, "_agents", {})
     steps._reader_semaphores.clear()
     return queries, reader
 
 
-def use_agent(monkeypatch, script, **kw):
+def use_agent(monkeypatch, script, mode=steps.DETAILED, **kw):
     model = ScriptedChatModel(script=script, **kw)
-    monkeypatch.setattr(steps, "_agent", steps.build_agent(model))
+    agents = dict(steps._agents)
+    agents[mode] = steps.build_agent(model, mode=mode)
+    monkeypatch.setattr(steps, "_agents", agents)
     return model
 
 
@@ -410,7 +412,7 @@ def test_resume_then_continue(app, monkeypatch):
 
 def test_model_call_cap_gives_a_friendly_answer(app, monkeypatch):
     model = ScriptedChatModel(script=[AIMessage(content="searching", tool_calls=[tool_call(f"q{i}")]) for i in range(20)])
-    monkeypatch.setattr(steps, "_agent", steps.build_agent(model, model_call_limit=2))
+    monkeypatch.setattr(steps, "_agents", {steps.DETAILED: steps.build_agent(model, model_call_limit=2)})
 
     async def run():
         events = chainlit_context()
@@ -444,3 +446,140 @@ def test_thinking_blocks_never_shown(app, monkeypatch):
     events = asyncio.run(run())
     (msg,) = [s for s in steps_from_events(events).values() if s.get("type") == "assistant_message"]
     assert msg["streamed"] == "right" == msg["output"]
+
+
+# ---------- answer modes (Detailed / Quick picker) ----------
+
+def test_answer_mode_resolution():
+    from types import SimpleNamespace as NS
+    assert steps.answer_mode(NS(modes={"answer": "quick"})) == steps.QUICK
+    assert steps.answer_mode(NS(modes={"answer": "detailed"})) == steps.DETAILED
+    for modes in (None, {}, {"answer": "bogus"}, {"answer": None}, {"other": "quick"}):
+        assert steps.answer_mode(NS(modes=modes)) == steps.DETAILED, modes
+    assert steps.answer_mode(NS()) == steps.DETAILED, "messages without a modes attribute"
+
+
+def test_prompt_per_mode():
+    day = datetime(2026, 10, 27)
+    detailed = steps.system_prompt(day)
+    assert detailed == steps.SYSTEM_PROMPT.replace("{today}", "October 27, 2026"), "Detailed prompt unchanged"
+    assert steps.system_prompt(day, mode=steps.DETAILED) == detailed
+    quick = steps.system_prompt(day, mode=steps.QUICK)
+    assert steps.QUICK_INSTRUCTION not in detailed and quick.count(steps.QUICK_INSTRUCTION) == 1
+    assert quick.replace("\n" + steps.QUICK_INSTRUCTION, "") == detailed, "the instruction is the only difference"
+    assert "Don't use your own knowledge to answer the question.\n" + steps.QUICK_INSTRUCTION in quick
+
+
+def test_effort_per_mode_and_one_cached_agent_per_mode(monkeypatch):
+    import models
+    assert steps.ANSWER_MODE_EFFORT == {steps.DETAILED: models.MAIN_EFFORT, steps.QUICK: "medium"}
+    # Detailed's supervisor is configured exactly as main_llm() was before answer modes existed.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    fields = ("model", "reasoning_effort", "max_tokens", "streaming", "thinking", "temperature")
+    before = models.chat_model(models.MAIN_MODEL, max_tokens=32000, effort=models.MAIN_EFFORT, streaming=True)
+    detailed_llm = models.main_llm(effort=steps.ANSWER_MODE_EFFORT[steps.DETAILED])
+    assert {f: getattr(detailed_llm, f) for f in fields} == {f: getattr(before, f) for f in fields}
+    assert models.main_llm(effort=steps.ANSWER_MODE_EFFORT[steps.QUICK]).reasoning_effort == "medium"
+
+    built = []
+
+    def fake_main_llm(effort=None):
+        built.append(effort)
+        return ScriptedChatModel(script=[])
+
+    monkeypatch.setattr(steps.models, "main_llm", fake_main_llm)
+    detailed = steps.get_agent()
+    assert steps.get_agent(steps.DETAILED) is detailed
+    quick = steps.get_agent(steps.QUICK)
+    assert steps.get_agent(steps.QUICK) is quick and quick is not detailed
+    assert built == [models.MAIN_EFFORT, "medium"], "built once per mode, lazily"
+
+
+class ConfigSpy:
+    """Wraps a compiled agent and records the config each turn runs it with (what LangSmith sees)."""
+
+    def __init__(self, agent):
+        self.agent, self.configs = agent, []
+
+    def astream(self, *args, config=None, **kwargs):
+        self.configs.append(config)
+        return self.agent.astream(*args, config=config, **kwargs)
+
+
+def test_quick_turn_uses_the_quick_agent(app, monkeypatch):
+    detailed_model = use_agent(monkeypatch, [answer("<final_answer>Long answer [1].</final_answer>")])
+    quick_model = use_agent(monkeypatch, [answer("<final_answer>Short answer.</final_answer>")], mode=steps.QUICK)
+    spies = {mode: ConfigSpy(agent) for mode, agent in steps._agents.items()}
+    monkeypatch.setattr(steps, "_agents", spies)
+
+    async def run():
+        events = chainlit_context()
+        await app.on_chat_start()
+        await send(app, "q1", modes={"answer": "quick"})
+        await send(app, "q2")  # no modes: Detailed
+        return events
+
+    events = asyncio.run(run())
+    answers = [s for s in steps_from_events(events).values() if s.get("type") == "assistant_message"]
+    assert [(a["output"], a["metadata"]) for a in answers] == [
+        ("Short answer.", {"cgpt_answer_mode": "quick"}), ("Long answer [1].", {"cgpt_answer_mode": "detailed"})]
+    assert answers[0]["streamed"] == answers[0]["output"], "quick answers stream and save like detailed ones"
+    (quick_request,) = quick_model.requests
+    assert quick_request[0].content == steps.system_prompt(mode=steps.QUICK)
+    (detailed_request,) = detailed_model.requests
+    assert detailed_request[0].content == steps.system_prompt()
+    (quick_config,) = spies[steps.QUICK].configs
+    assert quick_config["metadata"]["answer_mode"] == "quick" and quick_config["tags"] == ["answer_mode:quick"]
+    (detailed_config,) = spies[steps.DETAILED].configs
+    assert detailed_config["metadata"]["answer_mode"] == "detailed" and detailed_config["tags"] == ["answer_mode:detailed"]
+    assert quick_config["run_name"] == detailed_config["run_name"] == "ChitrapurGPT turn"
+
+
+def test_commands_ignore_the_mode(app, monkeypatch):
+    quick_model = use_agent(monkeypatch, [], mode=steps.QUICK)
+
+    async def run():
+        events = chainlit_context()
+        await app.on_chat_start()
+        await send(app, "rathotsava", command="Exact Search", modes={"answer": "quick"})
+        return events
+
+    events = asyncio.run(run())
+    (out,) = [s for s in steps_from_events(events).values() if s.get("type") == "assistant_message"]
+    import search_engine
+    assert out["output"] == search_engine.search_knowledge_base("rathotsava", exact=True)
+    assert out["metadata"] == steps.COMMAND_OUTPUT and quick_model.requests == []
+
+
+def test_edit_keeps_the_mode(app, monkeypatch):
+    quick_model = use_agent(monkeypatch, [answer("<final_answer>A</final_answer>"),
+                                          answer("<final_answer>B</final_answer>")], mode=steps.QUICK)
+
+    async def run():
+        chainlit_context()
+        await app.on_chat_start()
+        first = await send(app, "What is Kojagiri?", modes={"answer": "quick"})
+        for m in chat_context.get():  # what chainlit.socket.edit_message does: same Message object, new content
+            if m.id == first.id:
+                m.content = "What is Hari Jagara?"
+                await m.update()
+        await app.on_message(first)
+
+    asyncio.run(run())
+    assert len(quick_model.requests) == 2, "the edited message re-ran with the mode it was sent with"
+
+
+def test_modes_offered_on_start_and_resume(app):
+    async def run():
+        events = chainlit_context()
+        await app.on_chat_start()
+        await app.on_chat_resume(thread())
+        return [e["modes"] for e in events if e["kind"] == "set_modes"]
+
+    offered = asyncio.run(run())
+    assert len(offered) == 2 and offered[0] == offered[1]
+    (mode,) = offered[0]
+    assert mode["id"] == "answer" and mode["name"] == "Answer"
+    assert [(o["id"], o["name"], o["default"]) for o in mode["options"]] == [("detailed", "Detailed", True),
+                                                                            ("quick", "Quick", False)]
+    assert all(o["icon"] and o["description"] for o in mode["options"])
