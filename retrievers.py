@@ -1,50 +1,32 @@
 from langchain_core.documents import Document
-from pinecone_vectorstore_wrapper import PineconeVectorStore
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
-import pinecone
-from pinecone import Pinecone, ServerlessSpec
 import json
-import time
 from pprint import pprint, pformat
 import logging
 import dotenv
 from rapidfuzz import fuzz, process
 from metaphone import doublemetaphone
 
+from vector_store import PgVectorStore, clean_metadata
+
 dotenv.load_dotenv()
 
-def clean_metadata(metadata):
-    """
-    Thoroughly clean metadata for Chroma vector store
-    """
-    cleaned_metadata = {}
-    for key, value in metadata.items():
-        if value is None:
-            cleaned_metadata[key] = "Unknown"
-        elif isinstance(value, (str, int, float, bool)):
-            cleaned_metadata[key] = value
-        else:
-            # Convert complex types to string representation
-            cleaned_metadata[key] = str(value)
-    
-    return cleaned_metadata
 
-  
 def add_to_vector_store(documents: list[Document]) -> None:
     vector_db = load_vector_store()
-    
+
     # Clean documents
     cleaned_documents = [
         Document(
-            page_content=doc.page_content, 
+            page_content=doc.page_content,
             metadata=clean_metadata(doc.metadata)
         ) for doc in documents
     ]
-    
+
     doc_ids = [get_doc_id(doc) for doc in cleaned_documents]
-    existing_ids = sum(list(vector_db._index.list()),[])
+    existing_ids = vector_db.existing_ids(doc_ids)
     
     existing_docs = []
     existing_doc_ids = []
@@ -74,27 +56,9 @@ def add_to_vector_store(documents: list[Document]) -> None:
             ids=new_doc_ids
         )
 
-def create_or_fetch_pinecone_index(index_name:str)->pinecone.Index:
-    pc = Pinecone()
-    existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
-    if index_name in existing_indexes:
-        logging.info(f"Index {index_name} already exists")
-        return pc.Index(index_name)
-    else:
-        logging.info(f"Creating index {index_name}")
-        pc.create_index(
-            name=index_name,
-            dimension=3072,
-            metric="dotproduct",
-            spec=ServerlessSpec(cloud="aws", region="us-east-1"),
-        )
-        while not pc.describe_index(index_name).status["ready"]:
-            time.sleep(1)
-
-
-def load_vector_store()->PineconeVectorStore:
-    index = create_or_fetch_pinecone_index("chitrapur-gpt")
-    return PineconeVectorStore(index=index, embedding=OpenAIEmbeddings(model="text-embedding-3-large"))
+def load_vector_store() -> PgVectorStore:
+    """The knowledge-base vector index in Postgres + pgvector (see vector_store.py)."""
+    return PgVectorStore(embedding=OpenAIEmbeddings(model="text-embedding-3-large"))
 
 def get_doc_id(doc: Document) -> str:
     """Generate a unique identifier for a document based on source and title."""

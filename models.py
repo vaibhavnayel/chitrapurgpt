@@ -9,7 +9,7 @@
   CGPT_READER_CONCURRENCY max reader calls in flight         40   (whole process, across parallel searches)
   CGPT_INGEST_MODEL       ingest.py article boundaries       claude-sonnet-5-5
 
-OpenAI is only used for the text-embedding-3-large embeddings the Pinecone index was built with (retrievers.py).
+OpenAI is only used for the text-embedding-3-large embeddings the vector index was built with (vector_store.py).
 """
 import os
 
