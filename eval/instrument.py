@@ -289,6 +289,9 @@ class RecordingEmitter(BaseChainlitEmitter):
     async def set_commands(self, commands):
         self._rec("set_commands", commands=[c.get("id") for c in commands])
 
+    async def set_modes(self, modes):
+        self._rec("set_modes", modes=[m.to_dict() for m in modes])
+
     async def emit(self, event, data):
         self._rec("emit", event=event)
 
