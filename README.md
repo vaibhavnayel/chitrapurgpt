@@ -12,10 +12,15 @@ base of ~5,900 magazine articles (Chitrapur Sunbeam), with citations. Built on C
 - Hybrid search: fuzzy and phonetic matching over the articles plus vector search in Postgres (pgvector)
 - Translation and transliteration, and reading files you attach (images, PDFs, Word, Excel, CSV, text)
 - Exact Search and Fuzzy Search commands for boolean keyword search (no LLM)
+- Admins add magazine issues (PDF) at `/admin/kb`: every page is read, the issue is split into articles and
+  summarised, and an admin reviews it before publishing (see `docs/INGEST.md`)
+- Collections (e.g. Sunbeam, later KSA) that admins switch on or off per person; each person's questions search
+  only their collections
 
 ## How it works
 
-See `docs/AGENT_DESIGN.md` for the design and `docs/PARITY.md` for the behaviour it keeps.
+See `docs/AGENT_DESIGN.md` for the design, `docs/PARITY.md` for the behaviour it keeps, and `docs/INGEST.md` for
+adding issues and collections.
 
 - `steps.py`: the main agent (Deep Agents), its one tool `search_knowledge_base` (query writer → hybrid retrieval →
   dedupe → per-document readers → formatted passages), final-answer streaming, and chat history (edits, reopened
@@ -23,10 +28,13 @@ See `docs/AGENT_DESIGN.md` for the design and `docs/PARITY.md` for the behaviour
 - `models.py`: which model does what (all env settings, see below)
 - `uploads.py`: turns attached files into content the agent can read
 - `retrievers.py`: the fuzzy and hybrid retrievers; `vector_store.py`: vector search in Postgres + pgvector
+- `kb.py`: collections and who searches which; `kb_index.py`: the articles in memory (loaded from Postgres) for
+  fuzzy search and the commands
+- `ingest/`: turning an uploaded PDF into articles (page reading and checking, splitting, assembly), the background
+  worker and publishing, and R2 storage
 - `scripts/load_vectors.py`: builds and loads the vector index
 - `search_engine.py`: the Exact/Fuzzy Search commands
-- `ingest.py`: offline import of new magazine issues into the knowledge base
-- `access.py`, `admin.py`: who may sign in, and the admin dashboard
+- `access.py`, `admin.py`, `admin_kb.py`: who may sign in, the admin dashboard, and its collections and uploads
 - `preview_oauth.py`, `preview_idle.py`: Google sign-in and idle tracking on Render PR previews
 
 ## Models and settings
@@ -46,7 +54,8 @@ To go back to the code defaults (both `xhigh`), delete those two env vars on Ren
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | reading each retrieved article |
 | `CGPT_READER_EFFORT` | `xhigh` | the readers' thinking effort (`off` turns their thinking off) |
 | `CGPT_READER_CONCURRENCY` | `40` | most reader calls in flight at once, for the whole process |
-| `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
+| `CGPT_INGEST_READER_MODEL` | `claude-haiku-5-5` (thinking off) | adding issues: reading each page, article summaries |
+| `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` (default effort) | adding issues: re-reading pages that fail the check, splitting the issue into articles |
 
 **Answer modes.** The chat composer's Answer picker offers Detailed (preselected) and Quick. Detailed is the agent
 exactly as configured above. Quick runs the agent at `CGPT_QUICK_EFFORT`, with one extra prompt line asking for a
@@ -77,14 +86,19 @@ LANGCHAIN_PROJECT = your-langsmith-project
 VECTOR_DATABASE_URL = postgresql://postgres@127.0.0.1:55433/cgpt_vec   # local copy of the vector index
 ```
 Sign-in and chat history also need `DATABASE_URL`, `CHAINLIT_AUTH_SECRET`, `OAUTH_GOOGLE_CLIENT_ID`,
-`OAUTH_GOOGLE_CLIENT_SECRET`, `CHAINLIT_URL` and `ADMIN_EMAILS` (set on Render).
+`OAUTH_GOOGLE_CLIENT_SECRET`, `CHAINLIT_URL` and `ADMIN_EMAILS` (set on Render). Adding issues needs Cloudflare R2:
+`R2_ACCOUNT_ID` (or `R2_ENDPOINT`), `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, plus a CORS rule on the
+bucket (`docs/INGEST.md`, Operations). Tests need `requirements-dev.txt`.
 
 ## Vector index (Postgres + pgvector)
 
-The vector half of the hybrid search lives in the app's own Postgres, in table `kb_article`:
-- one row per article, id `<source>-<title>`;
+The articles live in the app's own Postgres, in table `kb_article`, which both halves of the hybrid search read
+(fuzzy search and the commands from a copy in memory, `kb_index.py`):
+- one row per article, id `<source>-<title>` (published issues: `<source>#<n>`), and its collection (`kb_id`);
 - the article text, its metadata (jsonb), and a `text-embedding-3-large` embedding as `halfvec(3072)`.
   pgvector indexes `vector` only up to 2,000 dimensions, `halfvec` up to 4,000.
+- `knowledge_base.jsonl` stays in the repo; the app reads it once, on the first start after the collections change,
+  to record the original articles' order (so fuzzy-search ties break as before).
 - An HNSW index (`halfvec_ip_ops`, `m = 32, ef_construction = 200`). Search is by inner product (the embeddings are
   unit-length): the 15 nearest, then MMR picks 5.
 - The table, index and metadata format are defined once, in `vector_store.py`.
@@ -105,7 +119,9 @@ Build and load (idempotent: creates the `vector` extension, table and index, the
 - Without `--embeddings` it re-embeds all ~5,900 articles, roughly $1 of embeddings.
 - Locally, a pgvector Postgres 16 container serves as the copy (`VECTOR_DATABASE_URL` above). Production loads into
   the Render database the same way.
-- `ingest.py` adds new articles through the same store and skips ids already present.
+- New issues are added from `/admin/kb` (`docs/INGEST.md`); the old offline `ingest.py` is gone.
+- The app adds its collections tables and columns at startup (idempotent; no existing row is rewritten). Running it
+  against your local copy therefore migrates that copy; the tests and the E2E use throwaway databases.
 
 Pinecone is no longer used; its env vars were removed from Render on 27 Oct 2026.
 
@@ -119,27 +135,30 @@ The chat interface will be available at `http://localhost:8000`
 
 ## Tests
 
-Offline (no network, no API keys; fake models):
+Offline (no network, no API keys; fake models; `pip install -r requirements-dev.txt`):
 ```bash
-.venv/bin/python -m pytest tests/ eval/test_instrument.py -q --ignore=tests/test_admin.py --ignore=tests/e2e
+.venv/bin/python -m pytest tests/ eval/test_instrument.py -q
 .venv/bin/python tests/test_preview_idle.py
 .venv/bin/python tests/test_preview_oauth.py
+.venv/bin/python tests/test_on_message.py
 TEST_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_test .venv/bin/python tests/test_admin.py   # throwaway DB, wiped
 ```
-`tests/test_vector_store.py` needs `VECTOR_DATABASE_URL` pointing at the local pgvector copy. It reads the copy and
-tests the store in a throwaway database it creates on the same server and drops afterwards. Without it, those tests
-are skipped.
+`tests/test_vector_store.py`, `tests/test_kb.py` and `tests/test_ingest_jobs.py` need `VECTOR_DATABASE_URL`
+pointing at the local pgvector copy. They only read the copy, and work in throwaway databases they create on the
+same server and drop afterwards (`test_kb.py` copies the 5,924 articles in the old layout to test the migration and
+that the database gives exactly the jsonl's articles). Without it, those tests are skipped.
+`tests/test_ingest_jobs.py` runs a local S3 server (moto) in place of R2.
 
 With real models (small API cost):
 ```bash
-.venv/bin/python tests/ingest_live_check.py      # ingest.py against CGPT_INGEST_MODEL (~$0.01)
 E2E_DATABASE_URL=postgresql://postgres@localhost:5432/cgpt_e2e .venv/bin/python tests/e2e/run_e2e.py   # ~$0.5
 ```
 The E2E test starts a real Chainlit server on a throwaway local Postgres, signs in with a locally minted JWT and
 drives it over socket.io (streaming, saved messages, steps, uploads, commands, edit, Detailed / Quick answer modes,
-resume, `/admin`). Vector search
-goes to the local copy (`VECTOR_DATABASE_URL`, required). Add `--no-llm` to check only the server, sign-in, socket
-and database plumbing.
+resume, `/admin`, per-person collections, and adding an issue: upload → job → review → publish → searchable only
+with that collection). Articles live in a throwaway copy of the local index (`VECTOR_DATABASE_URL`, required); R2 is
+a local S3 server. The issue check needs a 4-page PDF in `.cache/` (instructions in the file) and is skipped
+without it. Add `--no-llm` to check only the server, sign-in, socket, database plumbing and collection switches.
 
 ## Evaluation
 
@@ -154,10 +173,19 @@ blind pairwise judge. See `eval/README.md`. Real user questions and results stay
 .venv/bin/python eval/judge.py eval/results/baseline.local.jsonl eval/results/new.local.jsonl --out eval/results/judge.local.jsonl
 ```
 
+Adding issues has its own eval: read → check → split (no publish) on a folder of PDFs, with a report
+(`.cache/ingest-eval/REPORT.local.md`; the PDFs and their text stay local):
+```bash
+.venv/bin/python eval/ingest_eval.py --budget-usd 9 ".cache/sunbeam_pdfs/20*/*.pdf"
+.venv/bin/python eval/ingest_report.py
+```
+
 ## Admin dashboard
 
 Admins (comma-separated emails in the `ADMIN_EMAILS` env var) sign in normally, then open `/admin`.
-Removing someone only stops them signing in; their chats are kept.
+Removing someone only stops them signing in; their chats are kept. The People page also has one button per
+collection per person (✓ on, ✗ off); **Collections & uploads** (`/admin/kb`) is where issues are added, reviewed
+and published, and collections are created (`docs/INGEST.md`).
 
 ## Deployment
 
