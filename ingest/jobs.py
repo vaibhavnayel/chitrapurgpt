@@ -301,6 +301,26 @@ class DbPageStore:
         self.new_cost += result.cost
 
 
+def indic_share(text: str) -> float:
+    """Share of the letters in `text` that are in an Indian script (Devanagari through Sinhala, which covers Kannada)."""
+    letters = [ch for ch in text if ch.isalpha()]
+    return sum(1 for ch in letters if "\u0900" <= ch <= "\u0dff") / len(letters) if letters else 0.0
+
+
+def embedding_text(title: str, summary: str, text: str) -> str:
+    """What gets embedded for an article.
+
+    Questions arrive in English. A discourse printed in Hindi, Konkani or Sanskrit sits far from them in embedding
+    space: the Guru Purnima 2026 ashirvachana ranked below 100th even for a query that was nearly its title. For
+    articles that are mostly in an Indian script the English title and summary are embedded instead, which put that
+    article first. The full text is still what's stored and read; English articles are embedded from their text, as
+    the original import was.
+    """
+    if summary.strip() and indic_share(text) > 0.5:
+        return f"{title}\n\n{summary}"
+    return text
+
+
 def _embed(texts: list[str]) -> list[list[float]]:
     from langchain_openai import OpenAIEmbeddings
     return OpenAIEmbeddings(model="text-embedding-3-large", chunk_size=64, max_retries=6).embed_documents(texts)
@@ -466,7 +486,7 @@ class Worker:
             raise JobError("No articles to publish (all are excluded).")
         info = asm.IssueInfo(label=issue.get("label", ""), published_date=issue.get("published_date", ""),
                              source=issue["source"])
-        texts = [a.text for a in articles]
+        texts = [embedding_text(a.title or "", a.summary or "", a.text) for a in articles]
         vectors = await asyncio.to_thread(self.embed, texts)
         rows = [(f"{info.source}#{a.n:03d}", a.text, asm.doc_metadata(a, info), v) for a, v in zip(articles, vectors)]
         replaced = await asyncio.to_thread(write_articles, self.db, job_id, job["kb_id"], info.source, rows)
