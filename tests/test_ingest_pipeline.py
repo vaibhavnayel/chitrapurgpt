@@ -361,3 +361,14 @@ def test_the_worker_is_off_on_pr_previews_unless_asked(monkeypatch):
     monkeypatch.delenv("IS_PULL_REQUEST")
     monkeypatch.setenv("INGEST_WORKER", "0")
     assert not worker_enabled()
+
+
+def test_mostly_indic_articles_are_embedded_by_their_english_title_and_summary():
+    from ingest.jobs import embedding_text, indic_share
+    hindi = "अनन्त संसार-समुद्रमध्ये मग्न समभ्युद्धर। यह बहुत पहले से चल रहा है। " * 20 + "In every transaction, You are with me."
+    english = "Swamiji arrived at Vittal on 29 July. " * 20 + "॥ ॐ ॥"
+    assert indic_share(hindi) > 0.8 and indic_share(english) < 0.05 and indic_share("12 34") == 0.0
+    assert embedding_text("Ashirvachana on Guru Purnima", "A discourse at Vittal.", hindi) == \
+        "Ashirvachana on Guru Purnima\n\nA discourse at Vittal."
+    assert embedding_text("Arrival", "Swamiji arrives.", english) == english, "English text is embedded as is"
+    assert embedding_text("Ashirvachana", "  ", hindi) == hindi, "no summary: fall back to the text"
