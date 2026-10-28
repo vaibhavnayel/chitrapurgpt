@@ -47,9 +47,21 @@ KB = [
 ]
 
 
+KB_IDS = ["sunbeam"] * len(KB)  # the knowledge base of each KB document (tests may extend both lists)
+
+
 class FakeVectorStore:
+    """Records the search_kwargs it was asked for (e.g. a kb_id filter) and honours the filter."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
     def as_retriever(self, **kwargs):
-        return KeywordRetriever(documents=KB, k=5)
+        search_kwargs = kwargs.get("search_kwargs") or {}
+        self.calls.append(search_kwargs)
+        kbs = (search_kwargs.get("filter") or {}).get("kb_id")
+        docs = [d for d, k in zip(KB, KB_IDS) if kbs is None or k in kbs]
+        return KeywordRetriever(documents=docs, k=5)
 
 
 class KeywordRetriever(BaseRetriever):
@@ -63,16 +75,25 @@ class KeywordRetriever(BaseRetriever):
         return [Document(page_content=d.page_content, metadata=dict(d.metadata)) for d in hits][: self.k]
 
 
-# Import steps against the tiny knowledge base, then put the real loaders back for other tests (e.g. ingest).
+def use_kb(docs: list[Document] | None = None, kb_ids: list[str] | None = None) -> None:
+    """Put a knowledge base in the in-memory index (and the fake vector store): the tiny KB by default."""
+    import kb_index
+    KB[:] = docs if docs is not None else _ORIGINAL_KB
+    KB_IDS[:] = kb_ids if kb_ids is not None else ["sunbeam"] * len(KB)
+    kb_index.INDEX.set_documents([(f"fake-{n}", k, d) for n, (d, k) in enumerate(zip(KB, KB_IDS))])
+
+
+# Import steps against the tiny knowledge base (no database), then put the real vector store loader back.
 import retrievers  # noqa: E402
 
-_real_loaders = (retrievers.load_vector_store, retrievers.load_docs_from_jsonl)
+_ORIGINAL_KB = list(KB)
+use_kb()
+_real_loader = retrievers.load_vector_store
 retrievers.load_vector_store = lambda: FakeVectorStore()
-retrievers.load_docs_from_jsonl = lambda path: list(KB)
 try:
     import steps  # noqa: E402,F401
 finally:
-    retrievers.load_vector_store, retrievers.load_docs_from_jsonl = _real_loaders
+    retrievers.load_vector_store = _real_loader
 
 
 def tool_call(query: str, call_id: str | None = None) -> dict:

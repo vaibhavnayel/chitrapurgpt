@@ -1,5 +1,6 @@
 import re
-from retrievers import load_docs_from_jsonl
+
+import kb_index
 
 def tokenize_query(query: str):
     """
@@ -90,12 +91,16 @@ def evaluate_query(query_expr, doc, exact: bool = False):
     
     return False
 
-def search_knowledge_base(query: str, exact: bool = False):
+def search_knowledge_base(query: str, exact: bool = False, kb_ids: list[str] | None = None):
     """
     Search the knowledge base for documents matching the boolean query.
     Supports nested parentheses, AND, and OR operators.
+    kb_ids limits the search to those knowledge bases (None: all). Articles come from the in-memory index
+    (kb_index.py), in the original knowledge base's order.
     """
-    docs = load_docs_from_jsonl("knowledge_base.jsonl")
+    if not kb_index.INDEX.loaded:
+        raise RuntimeError("the knowledge index isn't loaded (steps.py loads it at startup)")
+    docs = kb_index.INDEX.documents(kb_ids)
     parsed_query = parse_boolean_query(query)
     
     matching_docs = []

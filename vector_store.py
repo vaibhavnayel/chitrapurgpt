@@ -14,11 +14,17 @@ Connections come from a small psycopg pool whose connections are configured for 
 otherwise picks an exact sequential scan (its cost model ignores detoasting the halfvec column), which is ~50x
 slower and competes with chat traffic. Only this module's connections are affected.
 
+Articles belong to a knowledge base (`kb_id`, see kb.py). A search can be limited to some knowledge bases
+(`filter={"kb_id": [...]}`); `hnsw.iterative_scan = strict_order` (pgvector 0.8) keeps scanning the index until
+enough rows pass the filter, so a filtered search still returns its k nearest. Callers pass no filter when the user
+can search every knowledge base that has articles, so that search is exactly the unfiltered one.
+
 DSN: VECTOR_DATABASE_URL, else DATABASE_URL (production sets only DATABASE_URL). scripts/load_vectors.py builds and
 loads the table using DDL and pinecone_style_metadata() from here.
 """
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from typing import Any, Iterable, List, Optional
@@ -33,6 +39,8 @@ from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+logger = logging.getLogger(__name__)
+
 DIM = 3072
 TABLE = "kb_article"
 INDEX = "kb_article_embedding_hnsw"
@@ -41,10 +49,13 @@ DEFAULT_EF_SEARCH = 400
 DDL = f"""
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS {TABLE} (
-    id        text PRIMARY KEY,          -- "<source>-<title>", the id the Pinecone index used
+    id        text PRIMARY KEY,          -- "<source>-<title>" (the Pinecone ids); published issues: "<source>#<n>"
     content   text NOT NULL,             -- the article text (Document.page_content)
     metadata  jsonb NOT NULL,            -- as Pinecone returned it (see module docstring)
-    embedding halfvec({DIM}) NOT NULL
+    embedding halfvec({DIM}) NOT NULL,
+    kb_id     text NOT NULL DEFAULT 'sunbeam',  -- the knowledge base (kb.py)
+    seq       bigint,                    -- load order of published articles (the original import: kb_legacy_order)
+    issue_id  bigint                     -- the ingest job that published it (NULL for the original import)
 );
 CREATE INDEX IF NOT EXISTS {INDEX} ON {TABLE} USING hnsw (embedding halfvec_ip_ops)
     WITH (m = 32, ef_construction = 200);
@@ -173,6 +184,10 @@ class PgVectorStore(VectorStore):
         register_vector(conn)
         conn.execute(f"SET hnsw.ef_search = {self.ef_search}")
         conn.execute("SET enable_seqscan = off")
+        try:
+            conn.execute("SET hnsw.iterative_scan = strict_order")
+        except psycopg.Error:  # pgvector < 0.8: filtered searches may return fewer than k rows
+            logger.warning("hnsw.iterative_scan isn't available (pgvector < 0.8)")
 
     def close(self) -> None:
         self._pool.close()
@@ -223,26 +238,36 @@ class PgVectorStore(VectorStore):
 
     # ---- search ----
 
-    def _nearest(self, query_embedding: List[float], k: int, with_vectors: bool = False) -> list[tuple]:
-        """The k nearest articles by inner product (via the HNSW index): (content, metadata, -ip[, embedding])."""
-        q = HalfVector(query_embedding)
+    @staticmethod
+    def _query(cols: str, kb_ids: Optional[list[str]]) -> str:
+        where = "WHERE kb_id = ANY(%(kbs)s) " if kb_ids is not None else ""
+        return f"SELECT {cols} FROM {TABLE} {where}ORDER BY embedding <#> %(q)s LIMIT %(k)s"
+
+    def _nearest(self, query_embedding: List[float], k: int, with_vectors: bool = False,
+                 kb_ids: Optional[list[str]] = None) -> list[tuple]:
+        """The k nearest articles by inner product (via the HNSW index), optionally only in some knowledge bases:
+        (content, metadata, -ip[, embedding])."""
         cols = "content, metadata, embedding <#> %(q)s" + (", embedding" if with_vectors else "")
         with self._pool.connection() as conn:
-            return conn.execute(f"SELECT {cols} FROM {TABLE} ORDER BY embedding <#> %(q)s LIMIT %(k)s",
-                                {"q": q, "k": k}).fetchall()
+            return conn.execute(self._query(cols, kb_ids),
+                                {"q": HalfVector(query_embedding), "k": k, "kbs": kb_ids}).fetchall()
 
-    def explain(self, query_embedding: List[float], k: int = 15) -> str:
+    def explain(self, query_embedding: List[float], k: int = 15, kb_ids: Optional[list[str]] = None) -> str:
         """The plan of a nearest-neighbour query on a vector-store connection (for checks and debugging)."""
         with self._pool.connection() as conn:
-            rows = conn.execute(f"EXPLAIN SELECT content, metadata, embedding FROM {TABLE} "
-                                f"ORDER BY embedding <#> %(q)s LIMIT %(k)s",
-                                {"q": HalfVector(query_embedding), "k": k}).fetchall()
+            rows = conn.execute("EXPLAIN " + self._query("content, metadata, embedding", kb_ids),
+                                {"q": HalfVector(query_embedding), "k": k, "kbs": kb_ids}).fetchall()
         return "\n".join(r[0] for r in rows)
 
     @staticmethod
-    def _filter_unsupported(filter: Optional[dict]) -> None:
-        if filter:
-            raise NotImplementedError("metadata filters aren't supported")
+    def _kb_filter(filter: Optional[dict]) -> Optional[list[str]]:
+        """The only filter supported: {"kb_id": [...]} (or a single id)."""
+        if not filter:
+            return None
+        if set(filter) != {"kb_id"}:
+            raise NotImplementedError("only a kb_id filter is supported")
+        kbs = filter["kb_id"]
+        return [kbs] if isinstance(kbs, str) else list(kbs)
 
     def similarity_search(self, query: str, k: int = 4, filter: Optional[dict] = None,
                           **kwargs: Any) -> List[Document]:
@@ -251,23 +276,24 @@ class PgVectorStore(VectorStore):
     def similarity_search_with_score(self, query: str, k: int = 4, filter: Optional[dict] = None,
                                      **kwargs: Any) -> List[tuple[Document, float]]:
         """Docs with their inner-product score (Pinecone's dotproduct score)."""
-        self._filter_unsupported(filter)
-        rows = self._nearest(self._embedding.embed_query(query), k)
+        rows = self._nearest(self._embedding.embed_query(query), k, kb_ids=self._kb_filter(filter))
         return [(Document(page_content=content, metadata=metadata), -neg_ip) for content, metadata, neg_ip in rows]
 
-    def similarity_search_by_vector(self, embedding: List[float], k: int = 4, **kwargs: Any) -> List[Document]:
-        return [Document(page_content=c, metadata=m) for c, m, _ in self._nearest(embedding, k)]
+    def similarity_search_by_vector(self, embedding: List[float], k: int = 4, filter: Optional[dict] = None,
+                                    **kwargs: Any) -> List[Document]:
+        return [Document(page_content=c, metadata=m)
+                for c, m, _ in self._nearest(embedding, k, kb_ids=self._kb_filter(filter))]
 
     def max_marginal_relevance_search(self, query: str, k: int = 5, fetch_k: int = 15, lambda_mult: float = 0.5,
                                       filter: Optional[dict] = None, **kwargs: Any) -> List[Document]:
         """Fetch the fetch_k nearest with their vectors, then the same MMR selection the Pinecone wrapper used."""
-        self._filter_unsupported(filter)
         return self.max_marginal_relevance_search_by_vector(self._embedding.embed_query(query), k=k,
-                                                            fetch_k=fetch_k, lambda_mult=lambda_mult)
+                                                            fetch_k=fetch_k, lambda_mult=lambda_mult, filter=filter)
 
     def max_marginal_relevance_search_by_vector(self, embedding: List[float], k: int = 5, fetch_k: int = 15,
-                                                lambda_mult: float = 0.5, **kwargs: Any) -> List[Document]:
-        rows = self._nearest(embedding, fetch_k, with_vectors=True)
+                                                lambda_mult: float = 0.5, filter: Optional[dict] = None,
+                                                **kwargs: Any) -> List[Document]:
+        rows = self._nearest(embedding, fetch_k, with_vectors=True, kb_ids=self._kb_filter(filter))
         if not rows:
             return []
         selected = _maximal_marginal_relevance(embedding, [r[3].to_list() for r in rows], k=k,
