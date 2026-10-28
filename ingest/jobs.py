@@ -527,10 +527,17 @@ def write_articles(db: str | None, job_id: int, kb_id: str, source: str, rows: l
 _worker: Worker | None = None
 
 
+def worker_enabled() -> bool:
+    """INGEST_WORKER=0 turns the worker off, =1 on. Default: on, except on Render PR previews, which share the live
+    database: a preview's worker would take live jobs with the preview's code."""
+    default = "0" if os.environ.get("IS_PULL_REQUEST") == "true" else "1"
+    return os.environ.get("INGEST_WORKER", default) != "0"
+
+
 def start_worker() -> Worker | None:
-    """Start the worker on the running event loop (app startup). INGEST_WORKER=0 turns it off."""
+    """Start the worker on the running event loop (app startup), if worker_enabled()."""
     global _worker
-    if os.environ.get("INGEST_WORKER", "1") == "0" or _worker is not None:
+    if not worker_enabled() or _worker is not None:
         return _worker
     _worker = Worker()
     asyncio.get_running_loop().create_task(_worker.run(), name="ingest-worker")

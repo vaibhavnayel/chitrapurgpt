@@ -112,7 +112,7 @@ invitations and rate tables).
 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | uploads | an R2 API token with Object Read & Write on that bucket only |
 | `CGPT_INGEST_READER_MODEL` | – | default `claude-haiku-5-5` (must allow thinking to be switched off) |
 | `CGPT_INGEST_MODEL` | – | default `claude-sonnet-5-5` |
-| `INGEST_WORKER` | – | `0` turns the background worker off (e.g. a second instance) |
+| `INGEST_WORKER` | – | `0` off, `1` on. Default: on, except on PR previews (`IS_PULL_REQUEST=true`), which share the live database |
 
 Without the R2 vars the app works as before and `/admin/kb` explains that uploads need R2 (collections and
 per-person switches still work).
@@ -135,6 +135,11 @@ within 3 minutes. Every API call's cost is added to the job (`cost_usd`).
 
 **Single instance.** Render runs one instance. A second one would also run a worker (safe: jobs are claimed with
 `SKIP LOCKED` and heartbeats), and its in-memory index catches up within a minute of a publish.
+
+**PR previews use the live database.** Their worker is off by default, so a preview never takes live jobs. An issue
+uploaded on a preview is processed by the live site once it runs this code. Publishing from a preview's review page
+publishes to the live knowledge base, as every other admin action there does. To try the whole flow on a preview,
+set `INGEST_WORKER=1` on it and expect real (live) results.
 
 ## Tests and the eval
 

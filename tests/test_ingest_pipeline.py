@@ -347,3 +347,17 @@ def test_prices_match_the_eval_table():
         assert pricing.PRICES[model] == prices, model
     assert ingest_llm.cost_usd("claude-haiku-5-5", 50_000, 1_000) == pytest.approx(0.0055)
     assert ingest_llm.cost_usd("claude-haiku-5-5", 120_000, 0) == pytest.approx(0.06), "long-prompt tier"
+
+
+def test_the_worker_is_off_on_pr_previews_unless_asked(monkeypatch):
+    from ingest.jobs import worker_enabled
+    monkeypatch.delenv("INGEST_WORKER", raising=False)
+    monkeypatch.delenv("IS_PULL_REQUEST", raising=False)
+    assert worker_enabled()
+    monkeypatch.setenv("IS_PULL_REQUEST", "true")  # previews share the live database
+    assert not worker_enabled()
+    monkeypatch.setenv("INGEST_WORKER", "1")
+    assert worker_enabled()
+    monkeypatch.delenv("IS_PULL_REQUEST")
+    monkeypatch.setenv("INGEST_WORKER", "0")
+    assert not worker_enabled()
