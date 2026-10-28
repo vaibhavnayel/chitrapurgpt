@@ -26,3 +26,6 @@ asyncpg==0.30.0
 pillow==13.0.0
 openpyxl==3.1.5
 pypdf==6.21.2
+# adding magazine issues (ingest/): rendering pages and reading their text layer, and Cloudflare R2 (S3 API)
+pypdfium2==5.14.0
+boto3==1.43.120

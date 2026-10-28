@@ -1,0 +1,5 @@
+# Running the tests (not needed on Render).
+-r requirements.txt
+pytest==9.1.1
+# a local S3 server standing in for Cloudflare R2 (tests/test_ingest_jobs.py, tests/e2e/run_e2e.py)
+moto[s3,server]==5.2.5

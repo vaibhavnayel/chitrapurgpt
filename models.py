@@ -9,7 +9,11 @@
   CGPT_READER_MODEL       per-document readers               claude-haiku-5-5
   CGPT_READER_EFFORT      readers' thinking effort           xhigh ("off" turns their thinking off)
   CGPT_READER_CONCURRENCY max reader calls in flight         40   (whole process, across parallel searches)
-  CGPT_INGEST_MODEL       ingest.py article boundaries       claude-sonnet-5-5
+  CGPT_INGEST_READER_MODEL  adding issues: reads each page,   claude-haiku-5-5 (thinking off)
+                            writes article summaries
+  CGPT_INGEST_MODEL         adding issues: re-reads pages     claude-sonnet-5-5 (default effort)
+                            that fail the check, splits the
+                            issue into articles
 
 OpenAI is only used for the text-embedding-3-large embeddings the vector index was built with (vector_store.py).
 """
@@ -37,6 +41,7 @@ READER_MODEL = os.environ.get("CGPT_READER_MODEL", "claude-haiku-5-5")
 READER_EFFORT = os.environ.get("CGPT_READER_EFFORT", "xhigh")
 READER_CONCURRENCY = int(os.environ.get("CGPT_READER_CONCURRENCY", "40"))
 INGEST_MODEL = os.environ.get("CGPT_INGEST_MODEL", "claude-sonnet-5-5")
+INGEST_READER_MODEL = os.environ.get("CGPT_INGEST_READER_MODEL", "claude-haiku-5-5")
 
 # Claude 4.x and older take temperature=0 (the old setting). Newer models reject `temperature` (Sonnet 5.5 and
 # Haiku 5.5 return 400 "temperature is deprecated for this model") and use thinking + `effort` instead.
