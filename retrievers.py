@@ -118,59 +118,73 @@ def deduplicate_docs(docs: list[Document]) -> list[Document]:
     logging.info(f"deduplicated {len(docs)} docs to {len(unique_docs)} docs")
     return unique_docs
 
+def fuzzy_cache_entry(doc: Document, kb_id: str = "sunbeam") -> dict:
+    """What FuzzyMatchRetriever pre-computes for one document (the slow part: phonetic codes of every word)."""
+    # Pre-compute lowercase content and tokens
+    content = doc.page_content.lower()
+    content_tokens = set(content.split())
+
+    # Pre-compute phonetic codes for content
+    content_phonetic = ' '.join([
+        doublemetaphone(word)[0]
+        for word in content.split()
+        if word
+    ])
+
+    # Pre-process metadata
+    important_metadata = {
+        k: str(v).lower()
+        for k, v in doc.metadata.items()
+        if k in ['title', 'summary', 'description']
+    }
+
+    # Pre-compute phonetic codes for metadata
+    metadata_phonetic = {
+        k: ' '.join([
+            doublemetaphone(word)[0]
+            for word in v.split()
+            if word
+        ])
+        for k, v in important_metadata.items()
+    }
+
+    return {
+        'document': doc,
+        'kb_id': kb_id,
+        'content': content,
+        'content_tokens': content_tokens,
+        'content_phonetic': content_phonetic,
+        'metadata': important_metadata,
+        'metadata_phonetic': metadata_phonetic
+    }
+
+
 class FuzzyMatchRetriever(BaseRetriever):
     documents: list[Document]
     k: int
     content_weight: float = 0.9
     metadata_weight: float = 0.1
     threshold: float = 30
-    
+    # Only documents in these knowledge bases (None: all). A filtered view shares the cache: with_kbs().
+    kb_ids: frozenset | None = None
+
     def __init__(self, **kwargs):
-        """Initialize with pre-processed document data for faster matching."""
+        """Initialize with pre-processed document data for faster matching. `cache` (fuzzy_cache_entry() per
+        document, in the same order) skips the pre-processing."""
+        cache = kwargs.pop("cache", None)
         super().__init__(**kwargs)
-        self._initialize_document_cache()
-    
+        if cache is None:
+            self._initialize_document_cache()
+        else:
+            self._doc_cache = cache
+
     def _initialize_document_cache(self):
         """Pre-process documents once during initialization."""
-        self._doc_cache = []
-        
-        for doc in self.documents:
-            # Pre-compute lowercase content and tokens
-            content = doc.page_content.lower()
-            content_tokens = set(content.split())
-            
-            # Pre-compute phonetic codes for content
-            content_phonetic = ' '.join([
-                doublemetaphone(word)[0] 
-                for word in content.split() 
-                if word
-            ])
-            
-            # Pre-process metadata
-            important_metadata = {
-                k: str(v).lower() 
-                for k, v in doc.metadata.items() 
-                if k in ['title', 'summary', 'description']
-            }
-            
-            # Pre-compute phonetic codes for metadata
-            metadata_phonetic = {
-                k: ' '.join([
-                    doublemetaphone(word)[0] 
-                    for word in v.split() 
-                    if word
-                ])
-                for k, v in important_metadata.items()
-            }
-            
-            self._doc_cache.append({
-                'document': doc,
-                'content': content,
-                'content_tokens': content_tokens,
-                'content_phonetic': content_phonetic,
-                'metadata': important_metadata,
-                'metadata_phonetic': metadata_phonetic
-            })
+        self._doc_cache = [fuzzy_cache_entry(doc) for doc in self.documents]
+
+    def with_kbs(self, kb_ids) -> "FuzzyMatchRetriever":
+        """The same retriever limited to some knowledge bases (no re-processing)."""
+        return self.model_copy(update={"kb_ids": None if kb_ids is None else frozenset(kb_ids)})
 
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
@@ -185,13 +199,16 @@ class FuzzyMatchRetriever(BaseRetriever):
         ])
         
         matching_documents = []
-        
+        kb_ids = self.kb_ids
+
         # Process documents in batches for better performance
         batch_size = 100
         for i in range(0, len(self._doc_cache), batch_size):
             batch = self._doc_cache[i:i + batch_size]
-            
+
             for doc_data in batch:
+                if kb_ids is not None and doc_data['kb_id'] not in kb_ids:
+                    continue
                 # Token overlap (pre-computed sets)
                 token_overlap = len(query_tokens & doc_data['content_tokens']) / len(query_tokens) * 100
                 

@@ -3,7 +3,8 @@
 Status: **as built (Phase B)**. Code: `steps.py` (agent, tool, streaming, history), `models.py` (model settings),
 `uploads.py` (attachments), `app.py` (Chainlit handlers), `ingest.py`. Parity requirements and every behaviour change
 are in `docs/PARITY.md`. Old-vs-new measurements: §13 below; full report in `eval/REPORT.local.md` (local only).
-Later: vector search on pgvector (Phase C, §14) and the Detailed / Quick answer modes (Phase D, §15).
+Later: vector search on pgvector (Phase C, §14), the Detailed / Quick answer modes (Phase D, §15), and collections
+with admin-uploaded issues (Phase E, §16; `ingest.py` was replaced by `ingest/`, see `docs/INGEST.md`).
 
 APIs below were checked against the installed source:
 - deepagents 0.7.32
@@ -133,7 +134,8 @@ unprofiled models (`graph.py:363-382`; built-in profiles exist only for `claude-
 | `CGPT_MAIN_MODEL` | `claude-sonnet-5-5` | main agent |
 | `CGPT_QUERY_MODEL` | `$CGPT_MAIN_MODEL` | query writer |
 | `CGPT_READER_MODEL` | `claude-haiku-5-5` | per-doc readers |
-| `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | `ingest.py` article-boundary extraction |
+| `CGPT_INGEST_READER_MODEL` | `claude-haiku-5-5` | adding issues: page reads (thinking off), summaries (Phase E) |
+| `CGPT_INGEST_MODEL` | `claude-sonnet-5-5` | adding issues: page re-reads and the split (Phase E; was `ingest.py`'s boundaries) |
 | `CGPT_MAIN_EFFORT` | by model family: `claude-opus-*` → `high`, `claude-sonnet-*` → `xhigh` | supervisor thinking effort (optional override) |
 | `CGPT_DETAILED_EFFORT` | `$CGPT_MAIN_EFFORT` (or its by-family default) | supervisor thinking effort for Detailed answers (§15) |
 | `CGPT_QUICK_EFFORT` | `medium` | supervisor thinking effort for Quick answers (§15) |
@@ -352,6 +354,8 @@ turn (`respond_to_user_message`, 170–810 runs each), so the requirement is to 
 model/tools structure, and to lose the "No indexed run ID" tracer warnings the current reader fan-out logs.
 
 ## 9. `ingest.py`
+
+*History: replaced in Phase E by `ingest/` and the `/admin/kb` uploads (`docs/INGEST.md`, §16).*
 
 Only the model changes: `models.chat_model(CGPT_INGEST_MODEL, max_tokens=20000)` (no temperature on Sonnet 5.5;
 20,000 stays under the Anthropic SDK's limit for a non-streaming call),
@@ -704,3 +708,23 @@ on the local pgvector copy. Readers at the code default `xhigh` in all three run
 **Reader tail latency:** Quick's latency floor is the slowest reader in its search. In one E2E Quick turn (a single
 search), one `xhigh` reader wrote 9k output tokens and took 36 s of the turn's 53 s. Production's readers run at
 `medium`, so this should be rarer there. Quick's readers are deliberately the same as Detailed's.
+
+## 16. Collections and admin-uploaded issues (Phase E)
+
+Full description in `docs/INGEST.md`. What changed for the agent:
+
+- **Articles come from Postgres.** `kb_index.INDEX` holds every article in memory, loaded from `kb_article` at
+  startup in the original order (`kb_legacy_order`) and refreshed after a publish. Fuzzy retrieval and the
+  Exact/Fuzzy Search commands read it; `knowledge_base.jsonl` is no longer read at runtime (except once, to record
+  that order). Fuzzy hits keep the original metadata form (`kb.doc_metadata()` turns the stored Pinecone-style
+  values back, exactly), so `format_docs` output and the dedupe key are unchanged.
+- **Per-person collections.** `app.on_message` looks up the person's switched-on collections (`kb.enabled_kbs`) and
+  puts them in a context variable (`kb.SEARCH_KBS`) for the turn. The search tool builds its retriever for those
+  collections (`steps.search_retriever`): the vector half gets `filter={"kb_id": [...]}`, the fuzzy half a filtered
+  view of the shared index. If they include every collection that has articles, neither half is filtered, so
+  today's Sunbeam-only searches are exactly as before. No collection → a notice (`steps.NO_COLLECTIONS`), no agent
+  run, and the notice is left out of a reopened chat's history.
+- **Prompt.** `steps.collections_line()` names the person's collections (name and description) above the tool
+  description, except when they search Sunbeam alone; then the prompt is byte-identical to before.
+- **The worker** runs in the web process (`@cl.on_app_startup` → `ingest.jobs.start_worker()`); its LLM calls use
+  the Anthropic SDK directly, not LangChain, and aren't traced to LangSmith (each job records its own cost).

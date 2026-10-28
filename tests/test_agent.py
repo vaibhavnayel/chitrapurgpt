@@ -17,6 +17,7 @@ from chainlit.chat_context import chat_context  # noqa: E402
 from chainlit.context import init_http_context  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 
+import kb  # noqa: E402
 import retrievers  # noqa: E402
 import steps  # noqa: E402
 from instrument import RecordingEmitter, steps_from_events  # noqa: E402
@@ -44,6 +45,11 @@ def passages_for(messages):
     return steps.RelevantPassages(reasoning="", passages_in_context=[f'"{title}" says: quoted passage'])
 
 
+SUNBEAM = {"id": "sunbeam", "name": "The Chitrapur Sunbeam", "description": "the magazine of Shri Chitrapur Math"}
+KSA = {"id": "ksa", "name": "Kanara Saraswat", "description": "the magazine of the Kanara Saraswat Association"}
+USER_KBS = [SUNBEAM]  # what kb.enabled_kbs answers for the signed-in user (no database in these tests)
+
+
 @pytest.fixture(autouse=True)
 def fake_tool_models(monkeypatch):
     queries = FakeStructured(lambda m: steps.Queries(reasoning="", queries=[m[-1].content.split(": ", 1)[1]]))
@@ -52,6 +58,12 @@ def fake_tool_models(monkeypatch):
     monkeypatch.setattr(steps, "reader_llm", lambda: reader)
     monkeypatch.setattr(steps, "_agents", {})
     steps._reader_semaphores.clear()
+
+    async def enabled_kbs(email):
+        return [dict(k) for k in USER_KBS]
+
+    monkeypatch.setattr(kb, "enabled_kbs", enabled_kbs)
+    USER_KBS[:] = [SUNBEAM]
     return queries, reader
 
 
@@ -583,3 +595,90 @@ def test_modes_offered_on_start_and_resume(app):
     assert [(o["id"], o["name"], o["default"]) for o in mode["options"]] == [("detailed", "Detailed", True),
                                                                             ("quick", "Quick", False)]
     assert all(o["icon"] and o["description"] for o in mode["options"])
+
+
+# ---------- collections (knowledge bases) ----------
+
+KSA_DOC = fakes.Document(
+    page_content="The KSA golden jubilee in Mumbai ended with a Rathotsava tableau.",
+    metadata={"source": "KSA-2099-March.txt", "published_date": "01-03-2099", "title": "KSA Golden Jubilee",
+              "author": None, "summary": "Jubilee", "start_line": None, "end_line": None, "start_page": 3,
+              "end_page": 4})
+
+
+@pytest.fixture
+def two_kbs():
+    fakes.use_kb([*fakes._ORIGINAL_KB, KSA_DOC], ["sunbeam"] * len(fakes._ORIGINAL_KB) + ["ksa"])
+    yield
+    fakes.use_kb()
+
+
+def test_search_covers_only_the_users_collections(two_kbs):
+    def search(kbs):
+        async def go():
+            chainlit_context()
+            token = kb.SEARCH_KBS.set(kbs)
+            try:
+                return await steps.search_knowledge_base.ainvoke({"research_query": "Rathotsava"})
+            finally:
+                kb.SEARCH_KBS.reset(token)
+        return asyncio.run(go())
+
+    store = steps.vector_db
+    both = search((SUNBEAM, KSA))
+    assert "Sunbeam-1976-April.txt" in both and "KSA-2099-March.txt" in both
+    assert "filter" not in store.calls[-1], "every collection with articles: an unfiltered search"
+    sunbeam_only = search((SUNBEAM,))
+    assert "Sunbeam-1976-April.txt" in sunbeam_only and "KSA-2099-March.txt" not in sunbeam_only
+    assert store.calls[-1]["filter"] == {"kb_id": ["sunbeam"]}
+    ksa_only = search((KSA,))
+    assert "KSA-2099-March.txt" in ksa_only and "Sunbeam" not in ksa_only
+    assert search(()) == "", "no collection: nothing to search"
+
+
+def test_unfiltered_while_sunbeam_is_the_only_collection():
+    steps.vector_db.calls.clear()
+    steps.search_retriever(["sunbeam"])
+    assert steps.vector_db.calls == [{"k": 5, "fetch_k": 15}], "exactly the search as it always was"
+    assert steps.search_retriever(["sunbeam"]).fuzzy_retriever.kb_ids is None
+
+
+def test_prompt_names_collections_except_for_sunbeam_alone():
+    now = datetime(2026, 10, 28)
+    base = steps.system_prompt(now)
+    assert steps.system_prompt(now, kbs=(SUNBEAM,)) == base, "Sunbeam alone: the prompt as before"
+    line = steps.collections_line((SUNBEAM, KSA))
+    assert line == ("The knowledge base holds articles from these collections: The Chitrapur Sunbeam (the magazine "
+                    "of Shri Chitrapur Math); Kanara Saraswat (the magazine of the Kanara Saraswat Association). The "
+                    "source file name of each search result shows which collection it comes from.")
+    both = steps.system_prompt(now, kbs=(SUNBEAM, KSA))
+    assert line in both and both.replace(line + "\n", "") == base
+    assert "Kanara Saraswat" in steps.system_prompt(now, mode=steps.QUICK, kbs=(KSA,))
+
+
+def test_turn_and_commands_search_the_users_collections(app, monkeypatch, two_kbs):
+    seen = []
+
+    async def respond(history, message):
+        seen.append(kb.SEARCH_KBS.get())
+        return history
+
+    monkeypatch.setattr(steps, "respond", respond)
+
+    async def run():
+        events = chainlit_context()
+        USER_KBS[:] = [KSA]
+        await send(app, "Rathotsava")
+        await send(app, "Rathotsava", command="Exact Search")
+        USER_KBS[:] = []
+        await send(app, "anything")
+        return assistant_outputs(events)
+
+    outputs = asyncio.run(run())
+    assert seen == [(KSA,)] and kb.SEARCH_KBS.get() is None, "set for the turn only"
+    assert "KSA-2099-March.txt" in outputs[0] and "Sunbeam" not in outputs[0], "the command searched KSA only"
+    assert outputs[-1] == app.NO_COLLECTIONS_MESSAGE
+    history = steps.history_from_thread(thread(step("u", "user_message", "anything"),
+                                               step("a", "assistant_message", app.NO_COLLECTIONS_MESSAGE,
+                                                    metadata=dict(steps.NO_COLLECTIONS))))
+    assert [type(m).__name__ for m in history] == ["HumanMessage"], "the notice isn't an answer"

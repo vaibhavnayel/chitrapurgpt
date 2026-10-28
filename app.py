@@ -18,8 +18,31 @@ import preview_idle
 admin.install(chainlit_server_app)
 preview_idle.install(chainlit_server_app)
 
+# Collections of articles each user searches (kb.py), and the worker that processes uploaded issues (ingest/).
+import kb
+from ingest import jobs
+
 ANSWER_FAILED_MESSAGE = "Sorry, something went wrong while preparing the answer. Please try again in a few minutes."
 NO_ACCESS_MESSAGE = "Sorry, you no longer have access to ChitrapurGPT. If you think this is a mistake, please contact the person who invited you."
+NO_COLLECTIONS_MESSAGE = ("Sorry, no collection of articles is switched on for you at the moment, so I have nothing to "
+                          "search. Please ask the person who invited you (an admin) to switch one on.")
+
+
+@cl.on_app_startup
+async def on_app_startup():
+    # Processes uploaded magazine issues in the background (ingest/jobs.py).
+    jobs.start_worker()
+
+
+async def user_collections() -> list[dict]:
+    """The knowledge bases this user's questions search (switched per person at /admin). If the database can't be
+    reached, Sunbeam (the default collection) rather than nothing."""
+    user = cl.user_session.get("user")
+    try:
+        return await kb.enabled_kbs(user.identifier if user else None)
+    except Exception:
+        logging.exception("Couldn't read the user's collections; searching Sunbeam")
+        return [{key: kb.SUNBEAM[key] for key in ("id", "name", "description")}]
 
 @cl.oauth_callback
 async def oauth_callback(
@@ -86,11 +109,23 @@ async def on_chat_resume(thread: ThreadDict):
 async def on_message(message: cl.Message):
     if not await still_allowed():
         return
+    collections = await user_collections()
+    if not collections:
+        await cl.Message(content=NO_COLLECTIONS_MESSAGE, metadata=dict(steps.NO_COLLECTIONS)).send()
+        return
+    token = kb.SEARCH_KBS.set(tuple(collections))  # read by the search tool and the system prompt (steps.py)
+    try:
+        await answer(message, [c["id"] for c in collections])
+    finally:
+        kb.SEARCH_KBS.reset(token)
+
+
+async def answer(message: cl.Message, kb_ids: list[str]):
     if message.command == "Fuzzy Search":
-        search_results = search_knowledge_base(message.content, exact=False)
+        search_results = search_knowledge_base(message.content, exact=False, kb_ids=kb_ids)
         await cl.Message(content=search_results, tags=["command_output"], metadata=dict(steps.COMMAND_OUTPUT)).send()
     elif message.command == "Exact Search":
-        search_results = search_knowledge_base(message.content, exact=True)
+        search_results = search_knowledge_base(message.content, exact=True, kb_ids=kb_ids)
         await cl.Message(content=search_results, tags=["command_output"], metadata=dict(steps.COMMAND_OUTPUT)).send()
     else:
         # An edited message comes back with its original id: answer it as if what followed it never happened.

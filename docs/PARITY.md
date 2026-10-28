@@ -42,7 +42,7 @@ Approved: fixes 1, 2, 3, 4, 5, 7, 8 and 9; kept as before: 6 (dedupe key) and 10
 | 9 edit | `test_edit_truncates_history`; E2E "edit truncates history" |
 | 10 reader failures | `test_reader_failure_skips_the_doc` |
 | 11 sampling | `models.py`; eval comparison of effort `low` vs `medium` (see `docs/AGENT_DESIGN.md` §13) |
-| 13 ingest | `tests/test_ingest.py` (offline, temp dir, upsert stubbed), `tests/ingest_live_check.py` |
+| 13 ingest | replaced in Phase E (§18): `tests/test_ingest_pipeline.py`, `tests/test_ingest_jobs.py`, E2E |
 | 16 uploads | `tests/test_uploads.py` (each type, oversize, unsupported, damaged, missing, caps); E2E "PDF upload used", "image upload used"; eval `edge-upload-*` |
 | safety cap (new) | `test_model_call_cap_gives_a_friendly_answer` |
 | query writer fallback (new) | `test_query_writer_failure_falls_back_to_the_question` |
@@ -198,6 +198,9 @@ build the system prompt per turn (and on resume). Flagged.
 
 ## 13. `ingest.py`
 
+*Replaced in Phase E: issues are added from `/admin/kb` by `ingest/` (§18, `docs/INGEST.md`). The table below is
+history.*
+
 | # | Behaviour | Status | Tested |
 |---|---|---|---|
 | 13.1 | Article-boundary extraction uses `claude-3-5-sonnet-latest`, which is **retired** (not in the models list). Structured output `ArticleBoundaries{scratchpad, article_boundaries[ArticleBoundary]}` with `include_raw=True`, `temperature=0`, `max_tokens=8000`, `with_retry()`. | **fix**: model from `CGPT_INGEST_MODEL` (default `claude-sonnet-5-5`); same schema and prompt. Sonnet 5.5 rules apply: no temperature, and forced tool choice is rejected, so use native structured output (`method="json_schema"`). Raise `max_tokens`: a 100-article issue needs more than 8k output tokens with thinking. | unit: run `extract_article_boundaries` on a short sample text to a temp dir with `add_to_vector_store` stubbed |
@@ -241,6 +244,27 @@ Quick is a deliberate difference, only when the user picks it:
 Commands (7), edits (9), history (3) and steps (5) behave the same in both modes. An edit keeps the edited message's
 mode, but Chainlit doesn't save modes, so in a reopened chat an edit runs Detailed. Tested in `tests/test_agent.py`
 and in the E2E.
+
+## 18. Collections and articles in Postgres (Phase E)
+
+Parity applies to everyone who searches Sunbeam alone, which is everyone until a second collection gets articles
+and someone is switched to it:
+- **Same articles.** Fuzzy search and the commands now load the articles from `kb_article` instead of
+  `knowledge_base.jsonl`. `tests/test_kb.py` copies the 5,924 articles in the pre-change table layout, runs the
+  startup migration, and checks the loaded articles against the jsonl: same text, same metadata (values and key
+  order), same order. Exact/Fuzzy Search output and fuzzy retrieval results are identical for sample queries, and the
+  E2E compares the live server's command output with results computed from the jsonl.
+- **Same searches.** While a person's collections include every collection that has articles, nothing is filtered:
+  the vector query, the fuzzy retriever and the commands are exactly the pre-change ones (unit tests).
+- **Same prompt.** Sunbeam alone adds no line (unit test).
+- **Untouched rows.** The migration adds columns and tables but rewrites no existing row (checked by `ctid`/`xmin`),
+  so the HNSW index and every original article stay as they were.
+
+Deliberate differences, only when they apply:
+- someone with no collection switched on gets a notice instead of an answer;
+- someone with another collection (or without Sunbeam) searches only their collections, and the prompt names them;
+- articles published from `/admin/kb` are new rows (ids `<source>#<n>`); publishing never touches the originals,
+  even for an issue the original import already has (the review page warns that both will be searchable).
 
 ---
 

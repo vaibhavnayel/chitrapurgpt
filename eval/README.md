@@ -38,7 +38,14 @@ variables because Chainlit refuses to register `@cl.oauth_callback` without them
 
 Vector search goes to `VECTOR_DATABASE_URL`, a local copy of the `kb_article` index (see the main README). The harness
 exits if it's unset or isn't on localhost, rather than silently running without vector search. Each record notes
-which copy it searched (`stack.vector_db`) and the `hnsw.ef_search` used.
+which copy it searched (`stack.vector_db`) and the `hnsw.ef_search` used. Since Phase E the app keeps its articles
+and collections in that database and adds its tables and columns there at startup (idempotent, no row rewritten), so
+running the eval migrates the copy; questions are answered as a person with the default collections (Sunbeam).
+
+Adding issues has a separate eval, `ingest_eval.py` (read → check → split on a folder of PDFs, page reads cached under
+`.cache/ingest-eval/`, costs in the spend ledger as `ingest-eval`, a `--budget-usd` cap) and `ingest_report.py`
+(per-issue and total numbers, old vs new knowledge base, flags; `.cache/ingest-eval/REPORT.local.md`). Both stay
+in `.cache/`: the PDFs and their text aren't for the public repo.
 
 ## Running
 

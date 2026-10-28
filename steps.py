@@ -26,22 +26,47 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+import kb
+import kb_index
 import models
+import retrievers
 import uploads
-from retrievers import (FuzzyMatchRetriever, HybridRetriever, deduplicate_docs, format_docs, load_docs_from_jsonl,
-                        load_vector_store)
+from retrievers import HybridRetriever, deduplicate_docs, format_docs
 
 logger = logging.getLogger(__name__)
 
-fuzzy_retriever = FuzzyMatchRetriever(documents=load_docs_from_jsonl("knowledge_base.jsonl"), k=5)
-vector_db_retriever = load_vector_store().as_retriever(search_type="mmr", search_kwargs={"k": 5, "fetch_k": 15})
-retriever = HybridRetriever(fuzzy_retriever=fuzzy_retriever, vector_db_retriever=vector_db_retriever)
+# The articles: in memory for fuzzy search (loaded from Postgres, refreshed after a publish), and the vector index.
+if not kb_index.INDEX.loaded:
+    kb_index.INDEX.load()
+vector_db = retrievers.load_vector_store()
+
+
+def search_retriever(kb_ids: list[str] | None = None) -> HybridRetriever:
+    """Fuzzy + vector retrieval over the given knowledge bases. When they include every knowledge base that has
+    articles (e.g. a Sunbeam user while Sunbeam is the only one), neither half is filtered: the search is exactly
+    the unfiltered one."""
+    search_kwargs = {"k": 5, "fetch_k": 15}
+    if not kb_index.INDEX.covers_all(kb_ids):
+        search_kwargs["filter"] = {"kb_id": list(kb_ids)}
+    return HybridRetriever(fuzzy_retriever=kb_index.INDEX.fuzzy_retriever(kb_ids),
+                           vector_db_retriever=vector_db.as_retriever(search_type="mmr", search_kwargs=search_kwargs))
+
+
+def __getattr__(name: str):
+    # Older callers (the eval harness, tests) look at steps.fuzzy_retriever / steps.retriever.
+    if name == "fuzzy_retriever":
+        return kb_index.INDEX.fuzzy_retriever()
+    if name == "retriever":
+        return search_retriever()
+    raise AttributeError(name)
+
 
 # Marks on assistant messages that aren't answers, so a reopened chat leaves them out of the agent's history
 # (step metadata is saved to the database; tags and commands aren't).
 COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
 UPLOAD_NOTE = {"cgpt_kind": "upload_note"}
 ANSWER_FAILED = {"cgpt_kind": "answer_failed"}  # app.py's "something went wrong, try again" notice
+NO_COLLECTIONS = {"cgpt_kind": "no_collections"}  # app.py's "no knowledge base is switched on for you" notice
 
 SYSTEM_PROMPT = """
 You are a helpful research assistant who can answer questions about the chitrapur saraswat religious community by thoroughly studying magazine articles in your knowledge base.
@@ -106,12 +131,31 @@ def answer_mode(message) -> str:
     return value if value in ANSWER_MODE_EFFORT else DETAILED
 
 
-def system_prompt(now: datetime | None = None, mode: str = DETAILED) -> str:
+# ---------- which collections the user searches ----------
+
+_COLLECTIONS_ANCHOR = "you have access to a search_knowledge_base tool"
+assert SYSTEM_PROMPT.count(_COLLECTIONS_ANCHOR) == 1
+
+
+def collections_line(kbs) -> str:
+    """Names the user's collections, unless they search only Sunbeam (then the prompt is exactly as before)."""
+    if kbs is None or [k["id"] for k in kbs] == [kb.DEFAULT_KB]:
+        return ""
+    names = "; ".join(f"{k['name']} ({k['description']})" if k.get("description") else k["name"] for k in kbs)
+    return (f"The knowledge base holds articles from these collections: {names}. The source file name of each "
+            f"search result shows which collection it comes from.")
+
+
+def system_prompt(now: datetime | None = None, mode: str = DETAILED, kbs=None) -> str:
     """Built for every model call, so the date is today's, not the deploy's. Quick adds one instruction line;
-    Detailed is the prompt as it always was."""
+    Detailed is the prompt as it always was. `kbs` (the user's collections) adds a line naming them, except for
+    Sunbeam alone."""
     prompt = SYSTEM_PROMPT.replace("{today}", (now or datetime.now()).strftime("%B %d, %Y"))
     if mode == QUICK:
         prompt = prompt.replace(_QUICK_ANCHOR, f"{_QUICK_ANCHOR}\n{QUICK_INSTRUCTION}")
+    line = collections_line(kbs)
+    if line:
+        prompt = prompt.replace(_COLLECTIONS_ANCHOR, f"{line}\n{_COLLECTIONS_ANCHOR}")
     return prompt
 
 
@@ -215,8 +259,11 @@ async def search_knowledge_base(research_query: str) -> str:
 
     queries = await generate_search_queries(research_query)
 
-    # search the knowledge base (the fuzzy matcher is CPU-bound, so keep it off the event loop)
-    docs = await asyncio.to_thread(retriever.batch, queries)
+    # search the user's knowledge bases (the fuzzy matcher is CPU-bound, so keep it off the event loop)
+    kb_ids = kb.search_kb_ids()
+    if kb_ids == []:
+        return ""
+    docs = await asyncio.to_thread(search_retriever(kb_ids).batch, queries)
     docs = deduplicate_docs(docs)
 
     #contextual compression
@@ -229,12 +276,12 @@ async def search_knowledge_base(research_query: str) -> str:
 
 @dynamic_prompt
 def _todays_system_prompt(request) -> str:
-    return system_prompt()
+    return system_prompt(kbs=kb.SEARCH_KBS.get())
 
 
 @dynamic_prompt
 def _todays_quick_system_prompt(request) -> str:
-    return system_prompt(mode=QUICK)
+    return system_prompt(mode=QUICK, kbs=kb.SEARCH_KBS.get())
 
 
 def _model_key(model: BaseChatModel) -> str:
@@ -439,7 +486,8 @@ _COMMAND_OUTPUT_SHAPE = re.compile(r"^\n\d+\. .*\(Source: [^\n]*\)\nSnippet: ")
 
 def history_from_thread(thread: dict) -> list[BaseMessage]:
     """Agent history for a reopened chat, from its saved user and assistant messages (no tool calls or results,
-    as before). Leaves out errors, upload notes, and Exact/Fuzzy Search requests with their results."""
+    as before). Leaves out errors and notices (upload notes, "try again", "no collections"), and Exact/Fuzzy
+    Search requests with their results."""
     attachments = defaultdict(list)
     for element in thread.get("elements") or []:
         attachments[element.get("forId")].append(element)
@@ -455,7 +503,8 @@ def history_from_thread(thread: dict) -> list[BaseMessage]:
                 continue  # e.g. an attachment-only message whose file record is gone: the API rejects empty text
             history.append(HumanMessage(content=output, id=step.get("id")))
         elif step.get("type") == "assistant_message":
-            if step.get("isError") or kind in (UPLOAD_NOTE["cgpt_kind"], ANSWER_FAILED["cgpt_kind"]):
+            if step.get("isError") or kind in (UPLOAD_NOTE["cgpt_kind"], ANSWER_FAILED["cgpt_kind"],
+                                               NO_COLLECTIONS["cgpt_kind"]):
                 continue
             if kind == COMMAND_OUTPUT["cgpt_kind"] or _COMMAND_OUTPUT_SHAPE.match(output) or not output.strip():
                 if history and isinstance(history[-1], HumanMessage):

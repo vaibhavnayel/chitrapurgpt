@@ -16,7 +16,10 @@ os.environ.update({
     "CHAINLIT_AUTH_SECRET": "x" * 64,
     "OAUTH_GOOGLE_CLIENT_ID": "test-client",
     "OAUTH_GOOGLE_CLIENT_SECRET": "test-secret",
+    "INGEST_WORKER": "0",
 })
+for _var in ("DATABASE_URL", "VECTOR_DATABASE_URL"):  # no database here: the user's collections are stubbed
+    os.environ.pop(_var, None)
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage  # noqa: E402
 
@@ -51,10 +54,17 @@ async def main():
     steps.history_before = lambda messages, message_id: list(messages)
     steps.COMMAND_OUTPUT = {"cgpt_kind": "command_output"}
     steps.ANSWER_FAILED = {"cgpt_kind": "answer_failed"}
+    steps.NO_COLLECTIONS = {"cgpt_kind": "no_collections"}
     sys.modules["steps"] = steps
     os.chdir(tempfile.mkdtemp())  # Chainlit writes its default config files into the working directory
     import app
 
+    collections = [{"id": "sunbeam", "name": "The Chitrapur Sunbeam", "description": ""}]
+
+    async def user_collections():
+        return list(collections)
+
+    app.user_collections = user_collections
     session = {"messages": [SystemMessage(content="system")], "user": None}
 
     app.cl = types.SimpleNamespace(
@@ -75,6 +85,12 @@ async def main():
     names = [type(m).__name__ for m in session["messages"]]
     assert names[:2] == ["SystemMessage", "HumanMessage"] and "ToolMessage" in names
     assert isinstance(session["messages"][1], HumanMessage) and session["messages"][1].content == "second question"
+
+    # No collection switched on: a clear message, the agent isn't run, the history is unchanged.
+    collections.clear()
+    before, n_calls = list(session["messages"]), len(calls)
+    await app.on_message(msg("third question"))
+    assert said[-1] == app.NO_COLLECTIONS_MESSAGE and len(calls) == n_calls and session["messages"] == before
     print("on_message: all checks passed")
 
 
