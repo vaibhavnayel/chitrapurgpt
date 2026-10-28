@@ -19,6 +19,7 @@ from chainlit.auth import get_token_from_cookies
 from chainlit.auth.jwt import decode_jwt
 
 import access
+import kb
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,26 @@ form.inline{display:inline;margin:0}
 .msg.assistant_message{border-left:5px solid #2e9e50}
 .msg .who{font-weight:600;font-size:15px;margin-bottom:4px}
 .msg .text{white-space:pre-wrap;overflow-wrap:anywhere}
+header nav a{margin-right:14px}
+main.wide{max-width:1500px}
+.tag.on{background:#e3f2e6;color:#1e6b32;border:1px solid #9ccfa6}
+.tag.off{background:#f6f6f6;color:#888;border:1px solid #ddd}
+.tag.run{background:#fff4e0;color:#8a5a00}
+.tag.bad{background:#fdecea;color:#a12622}
+form.kb-toggle{display:inline;margin:0 4px 0 0}
+form.kb-toggle button{font-size:14px;padding:1px 8px;border-radius:10px}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 16px}
+.stat{background:#fff;border:1px solid #dfe3e8;border-radius:8px;padding:10px 14px;min-width:120px}
+.stat .n{font-size:22px;font-weight:600}
+.stat .l{color:#6b7480;font-size:14px}
+details{margin:10px 0}
+summary{cursor:pointer;font-weight:600}
+.two-col{display:flex;gap:18px;align-items:flex-start}
+.two-col>div{flex:1;min-width:0}
+.article-text{white-space:pre-wrap;overflow-wrap:anywhere;background:#fff;border:1px solid #dfe3e8;border-radius:8px;padding:14px;font-size:16px}
+.page-img{width:100%;border:1px solid #dfe3e8;border-radius:4px;margin-bottom:10px;background:#fff}
+input[type=text],select,textarea{font-size:16px;padding:6px 9px;border:1px solid #8a94a0;border-radius:6px;max-width:100%}
+@media (max-width:900px){.two-col{flex-direction:column}}
 @media (max-width:640px){
   main{padding:12px}
   table,tbody,tr,td{display:block;width:100%}
@@ -119,7 +140,7 @@ form.inline{display:inline;margin:0}
 
 
 def _page(title: str, body: str, *, email: str | None = None, flash: str = "", flash_kind: str = "ok",
-          status: int = 200, banner: bool = True) -> HTMLResponse:
+          status: int = 200, banner: bool = True, wide: bool = False) -> HTMLResponse:
     if _is_preview():
         warning = ("<strong>⚠️ You are looking at LIVE data.</strong> This preview site uses the real "
                    "ChitrapurGPT database: the people and chats below are real, and any change you make "
@@ -132,8 +153,9 @@ def _page(title: str, body: str, *, email: str | None = None, flash: str = "", f
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
 <title>{_e(title)} · ChitrapurGPT admin</title><style>{CSS}</style></head><body>
 <header><span class="title"><a href="/admin" style="text-decoration:none">ChitrapurGPT admin</a></span>
+{'<nav><a href="/admin">People</a><a href="/admin/kb">Collections &amp; uploads</a></nav>' if email else ''}
 <span>{who} &nbsp; <a href="/">Open ChitrapurGPT</a></span></header>
-<main>
+<main{' class="wide"' if wide else ''}>
 {f'<div class="banner warn">{warning}</div>' if banner else ''}
 {f'<div class="banner {flash_kind}">{_e(flash)}</div>' if flash else ''}
 {body}
@@ -205,6 +227,26 @@ async def dashboard(request: Request):
     can_sign_in = [p for p in people if p in allowed or p in admins]
     no_access = [p for p in people if p not in can_sign_in]
     csrf = _csrf_token(email)
+    try:
+        kbs, own_settings = await kb.list_kbs(), await kb.access_rows()
+    except Exception:  # noqa: BLE001  (the people list still works without the knowledge-base database)
+        logger.exception("Couldn't read the knowledge bases")
+        kbs, own_settings = None, {}
+
+    def collections(p):
+        if kbs is None:
+            return '<span class="muted">unavailable</span>'
+        own = own_settings.get(p, {})
+        on = {k["id"] for k in kb.resolve(kbs, own)}
+        out = []
+        for k in kbs:
+            state = "on" if k["id"] in on else "off"
+            why = "set for this person" if k["id"] in own else "the collection's default"
+            out.append(f"""<form class="kb-toggle" method="post" action="/admin/kb/access">
+<input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="email" value="{_e(p)}">
+<input type="hidden" name="kb_id" value="{_e(k['id'])}"><input type="hidden" name="enabled" value="{0 if state == 'on' else 1}">
+<button class="tag {state}" title="{_e(k['name'])}: {state} ({why}). Click to turn it {'off' if state == 'on' else 'on'}.">{_e(k['source_prefix'])} {'✓' if state == 'on' else '✗'}</button></form>""")
+        return "".join(out)
 
     def row(p):
         u = usage.get(p, {"chats": 0, "last_chat": None})
@@ -225,6 +267,7 @@ onsubmit="return confirm('Remove ' + this.dataset.email + '? They will no longer
                  f'{"" if u["chats"] == 1 else "s"}</a>') if u["chats"] else '<span class="muted">none</span>'
         cls = "" if p in can_sign_in else ' class="off"'
         return (f'<tr{cls} data-email="{_e(p)}"><td><strong>{_e(p)}</strong></td><td>{status}</td>'
+                f'<td data-label="Collections">{collections(p)}</td>'
                 f'<td data-label="Chats">{chats}</td>'
                 f'<td data-label="Last chat">{_fmt_time(u["last_chat"]) or "<span class=muted>–</span>"}</td>'
                 f'<td>{action}</td></tr>')
@@ -246,11 +289,13 @@ Click the number of chats to read them.</p>
 var q=this.value.toLowerCase();document.querySelectorAll('tr[data-email]').forEach(function(r){{
 r.style.display=r.dataset.email.indexOf(q)<0?'none':''}})"></p>
 <div class="scroll"><table>
-<tr class="head"><th>Email</th><th>Access</th><th>Chats</th><th>Last chat</th><th></th></tr>
-{rows or '<tr><td colspan="5" class="muted">Nobody yet.</td></tr>'}
+<tr class="head"><th>Email</th><th>Access</th><th>Collections</th><th>Chats</th><th>Last chat</th><th></th></tr>
+{rows or '<tr><td colspan="6" class="muted">Nobody yet.</td></tr>'}
 </table></div>
 <p class="muted">Removing someone only stops them signing in. Their chats stay here.
-Admins are set by the site owner and can always sign in.</p>"""
+Admins are set by the site owner and can always sign in.
+Collections: which magazines each person's questions are answered from (✓ on, ✗ off). Click one to switch it.
+Someone you haven't switched gets each collection's default (<a href="/admin/kb">Collections &amp; uploads</a>).</p>"""
     return _page("People", body, email=email, flash=request.query_params.get("msg", ""),
                  flash_kind="bad" if request.query_params.get("kind") == "bad" else "ok")
 
@@ -347,8 +392,11 @@ async def remove(request: Request):
 
 
 def install(app):
-    """Add the /admin pages to Chainlit's FastAPI app, ahead of Chainlit's catch-all UI route."""
+    """Add the /admin pages (and admin_kb.py's collections and uploads) to Chainlit's FastAPI app, ahead of
+    Chainlit's catch-all UI route."""
+    import admin_kb
     before = list(app.router.routes)
     app.include_router(router)
+    app.include_router(admin_kb.router)
     added = [r for r in app.router.routes if r not in before]
     app.router.routes[:] = added + before
