@@ -178,9 +178,20 @@ R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
 <input type="text" name="source_prefix" required pattern="[A-Za-z][A-Za-z0-9]*"></label><br>
 <label><input type="checkbox" name="default_on" value="1"> On for everyone who hasn't been switched individually</label><br>
 <button class="primary" style="margin-top:8px">Add collection</button></form></div></details>
-{'<script>setTimeout(function(){location.reload()}, 10000)</script>' if active else ''}"""
+{LIST_REFRESH_JS if active else ''}"""
     return _page("Collections & uploads", body, email=admin, **_flash(request))
 
+
+# While a job is processing, the list refreshes itself so its status moves. It must never reload in the middle of
+# an upload (that aborts the PUT to R2) or while someone is typing in a form, so it only reloads when idle.
+LIST_REFRESH_JS = """<script>(function(){
+  function busy(){
+    if (window.cgptUploading) return true;
+    var f = document.getElementById('up-file'); if (f && f.files && f.files.length) return true;
+    var a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
+  }
+  setInterval(function(){ if (!busy()) location.reload(); }, 10000);
+})();</script>"""
 
 UPLOAD_JS = r"""
 (function(){
@@ -207,7 +218,7 @@ form.addEventListener('submit', async function(e){
   e.preventDefault();
   var file = document.getElementById('up-file').files[0], kbId = document.getElementById('up-kb').value;
   if (!file) return;
-  var button = form.querySelector('button'); button.disabled = true;
+  var button = form.querySelector('button'); button.disabled = true; window.cgptUploading = true;
   try {
     if (file.size > MAX) throw new Error('This file is over ' + Math.round(MAX/1048576) + ' MB.');
     var head = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
@@ -216,12 +227,12 @@ form.addEventListener('submit', async function(e){
     var digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
     var sha = Array.from(new Uint8Array(digest)).map(function(b){ return b.toString(16).padStart(2, '0'); }).join('');
     var slot = await post('/admin/kb/upload-url', {kb_id: kbId, filename: file.name, size: file.size, sha256: sha});
-    if (slot.warning && !confirm(slot.warning)) { say('Cancelled. Nothing was uploaded.'); button.disabled = false; return; }
+    if (slot.warning && !confirm(slot.warning)) { say('Cancelled. Nothing was uploaded.'); button.disabled = false; window.cgptUploading = false; return; }
     await put(slot.url, file);
     say('Uploaded. Queuing it…');
     var job = await post('/admin/kb/uploaded', {kb_id: kbId, key: slot.key, filename: file.name, size: file.size, sha256: sha});
     location.href = job.redirect;
-  } catch (err) { say(err.message); button.disabled = false; }
+  } catch (err) { say(err.message); button.disabled = false; window.cgptUploading = false; }
 });
 })();
 """

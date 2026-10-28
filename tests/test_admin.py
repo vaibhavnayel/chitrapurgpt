@@ -262,3 +262,12 @@ async def _record(said, content):
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+def test_upload_list_never_reloads_mid_upload():
+    """The uploads list refreshes itself while a job runs; a reload during the browser's PUT to storage aborts it."""
+    import admin_kb
+    assert "location.reload" in admin_kb.LIST_REFRESH_JS and "cgptUploading" in admin_kb.LIST_REFRESH_JS
+    assert "files.length" in admin_kb.LIST_REFRESH_JS, "a chosen-but-not-yet-sent file also blocks the reload"
+    assert "window.cgptUploading = true" in admin_kb.UPLOAD_JS
+    assert admin_kb.UPLOAD_JS.count("window.cgptUploading = false") == 2, "cleared on cancel and on error"
