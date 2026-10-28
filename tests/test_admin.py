@@ -27,8 +27,11 @@ os.environ.update({
     "OAUTH_GOOGLE_CLIENT_SECRET": "test-secret",
     "CHAINLIT_URL": "https://chitrapurgpt.onrender.com",
     "ADMIN_EMAILS": "Admin@gmail.com, second.admin@gmail.com",
+    "INGEST_WORKER": "0",
 })
-for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL"):
+# The collections tables go in the same throwaway database (no vector index needed for the People page).
+for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL", "VECTOR_DATABASE_URL",
+          "R2_BUCKET", "R2_ENDPOINT", "R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY"):
     os.environ.pop(k, None)
 
 # steps.py builds the retrievers (knowledge base + vector store) when imported; the chat logic isn't under test here.
@@ -190,6 +193,33 @@ async def main():
         assert await conn.fetchval("""SELECT "addedBy" FROM "AllowedUser" WHERE email = 'dave@gmail.com'""") == "admin@gmail.com"
         await conn.close()
 
+        # --- collections: switch Sunbeam off and on again for one person; others keep the default ---
+        import kb
+
+        def row_of(html, email):
+            return re.search(rf'<tr[^>]*data-email="{re.escape(email)}".*?</tr>', html, re.S).group(0)
+
+        r = await admin.get("/admin")
+        assert "Sunbeam ✓" in row_of(r.text, "alice@gmail.com")
+        assert (await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="sunbeam", enabled="0")
+                ) == "The Chitrapur Sunbeam is now off for alice@gmail.com."
+        assert await kb.enabled_kbs("Alice@gmail.com") == []
+        assert [k["id"] for k in await kb.enabled_kbs("carol@gmail.com")] == ["sunbeam"]
+        r = await admin.get("/admin")
+        assert "Sunbeam ✗" in row_of(r.text, "alice@gmail.com") and "Sunbeam ✓" in row_of(r.text, "carol@gmail.com")
+        assert "now on" in await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="sunbeam", enabled="1")
+        assert [k["id"] for k in await kb.enabled_kbs("alice@gmail.com")] == ["sunbeam"]
+        assert "unknown" in await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="nope", enabled="1")
+        assert "expired" in await post("/admin/kb/access", csrf="0" * 64, email="alice@gmail.com", kb_id="sunbeam",
+                                       enabled="0")
+        assert [k["id"] for k in await kb.enabled_kbs("alice@gmail.com")] == ["sunbeam"]
+        async with httpx.AsyncClient(transport=transport, base_url="https://chitrapurgpt.onrender.com",
+                                     cookies={"access_token": jwt_for("alice@gmail.com")}) as alice:
+            assert (await alice.post("/admin/kb/access", data={"csrf": csrf, "email": "alice@gmail.com",
+                                                                "kb_id": "sunbeam", "enabled": "0"})).status_code == 403
+        r = await admin.get("/admin/kb")
+        assert r.status_code == 200 and "The Chitrapur Sunbeam" in r.text and "Uploads need Cloudflare R2" in r.text
+
         r = await admin.get("/admin", params={"msg": "<script>x</script>", "kind": "bad"})
         assert "&lt;script&gt;x&lt;/script&gt;" in r.text and "<script>x" not in r.text
 
@@ -222,6 +252,7 @@ async def main():
         assert r.status_code == 200 and "<html" in r.text.lower() and "ChitrapurGPT admin" not in r.text
 
     await access.close_pool()
+    await kb.close_pool()
     print("admin: all checks passed")
 
 

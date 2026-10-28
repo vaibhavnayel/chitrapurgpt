@@ -12,14 +12,26 @@ socket.io client like the browser does. Checks:
   6. a Quick-mode message runs the quick agent, streams and saves normally, and keeps its mode when edited
   7. resuming a thread works (the picker is offered again) and the agent remembers the conversation
   8. /admin's chat viewer renders a new-stack thread
+  9. switching a collection off for one person at /admin stops their searches (and on again brings them back)
+ 10. adding a magazine issue: a new collection, upload (browser -> R2, a local S3 server here) -> job -> review ->
+     publish; the issue is then searchable (commands and the agent) for a person with the collection switched on,
+     and not for one without. Needs a small PDF that isn't in the repo (public): cut 4 pages of a real issue with
+       .venv/bin/python -c "from ingest.pdf import extract_pages; extract_pages('<issue>.pdf',
+                            '.cache/ingest-fixture/sunbeam-2024-08-sample.pdf', [6, 11, 31, 40])"
+     (pages of the August 2024 issue; check 10 is skipped if the file is missing).
+
+The articles and collections live in a throwaway copy of the local kb_article index (VECTOR_DATABASE_URL), made on
+the same server for the run and dropped afterwards.
 
   .venv/bin/python tests/e2e/run_e2e.py              # add --no-llm for plumbing only, --no-vector for fuzzy-only retrieval
 """
 import asyncio
 import glob
+import hashlib
 import html
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -40,15 +52,23 @@ sys.path.insert(0, str(ROOT))
 DB = os.environ.get("E2E_DATABASE_URL", "")
 if urllib.parse.urlsplit(DB).hostname not in ("localhost", "127.0.0.1"):
     sys.exit("Set E2E_DATABASE_URL to a throwaway *local* Postgres database (it gets wiped).")
-# Vector search goes to a local copy of the kb_article index (the server prefers VECTOR_DATABASE_URL over the chat
-# database it gets as DATABASE_URL). Read-only here.
+# The articles and collections live in a throwaway copy of the local kb_article index, made on the same server for
+# this run and dropped afterwards (the server writes to it: schema setup, publishing). The local copy is only read.
 VECTOR_DB = os.environ.get("VECTOR_DATABASE_URL", "")
-if "--no-vector" not in sys.argv and urllib.parse.urlsplit(VECTOR_DB).hostname not in ("localhost", "127.0.0.1"):
-    sys.exit("Set VECTOR_DATABASE_URL to a *local* database holding kb_article (see README), or pass --no-vector.")
+if urllib.parse.urlsplit(VECTOR_DB).hostname not in ("localhost", "127.0.0.1"):
+    sys.exit("Set VECTOR_DATABASE_URL to a *local* database holding kb_article (see README).")
 
 SECRET = secrets.token_hex(32)
 os.environ["CHAINLIT_AUTH_SECRET"] = SECRET  # for minting the JWT in this process
 EMAIL = "e2e.admin@example.com"
+READER_A, READER_B = "e2e.reader.a@example.com", "e2e.reader.b@example.com"
+# 4 pages of a real issue, cut by hand into .cache/ (git-ignored: the repo is public); the ingest check skips without it.
+FIXTURE = ROOT / ".cache" / "ingest-fixture" / "sunbeam-2024-08-sample.pdf"
+E2E_KB = {"id": "e2etest", "name": "E2E Test Magazine", "description": "a collection made by the E2E test",
+          "source_prefix": "E2ETest"}
+OLD_LAYOUT = """CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE kb_article (id text PRIMARY KEY, content text NOT NULL, metadata jsonb NOT NULL,
+                         embedding halfvec(3072) NOT NULL)"""
 RESULTS = {}
 
 
@@ -72,15 +92,61 @@ async def reset_db():
     await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
     for path in sorted(glob.glob(str(ROOT / "prisma/migrations/*/migration.sql"))):
         await conn.execute(open(path).read())
-    await conn.execute("""INSERT INTO "AllowedUser"(email, "addedBy") VALUES ($1, 'e2e')""", EMAIL)
+    await conn.executemany("""INSERT INTO "AllowedUser"(email, "addedBy") VALUES ($1, 'e2e')""",
+                           [(EMAIL,), (READER_A,), (READER_B,)])
     await conn.close()
 
 
-def start_server(log_path: Path) -> subprocess.Popen:
-    env = {**os.environ, "DATABASE_URL": DB, "CHAINLIT_AUTH_SECRET": SECRET, "ADMIN_EMAILS": EMAIL,
-           "OAUTH_GOOGLE_CLIENT_ID": "e2e-client", "OAUTH_GOOGLE_CLIENT_SECRET": "e2e-secret",
-           "CHAINLIT_URL": BASE, "PYTHONPATH": str(ROOT / "tests" / "e2e"), "CGPT_E2E_SHIMS": "1"}
-    for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL", "BUCKET_NAME"):
+def clone_vector_db() -> tuple[str, str]:
+    """A throwaway database holding the local copy's articles in the pre-change layout (as production has them), with
+    the HNSW index. Returns (URL, name)."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+    name = f"cgpt_e2e_vec_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(make_conninfo(VECTOR_DB, dbname="postgres"), autocommit=True) as conn:
+        conn.execute(f'CREATE DATABASE "{name}"')
+    url = urllib.parse.urlunsplit(urllib.parse.urlsplit(VECTOR_DB)._replace(path="/" + name))
+    with psycopg.connect(url, autocommit=True) as dst, psycopg.connect(VECTOR_DB) as src:
+        dst.execute(OLD_LAYOUT)
+        with src.cursor().copy("COPY (SELECT id, content, metadata, embedding FROM kb_article) TO STDOUT "
+                               "(FORMAT BINARY)") as out, \
+                dst.cursor().copy("COPY kb_article (id, content, metadata, embedding) FROM STDIN (FORMAT BINARY)") \
+                as into:
+            for chunk in out:
+                into.write(chunk)
+        dst.execute("SET maintenance_work_mem = '512MB'")
+        dst.execute("CREATE INDEX kb_article_embedding_hnsw ON kb_article USING hnsw (embedding halfvec_ip_ops) "
+                    "WITH (m = 32, ef_construction = 200)")
+        dst.execute("ANALYZE kb_article")
+    return url, name
+
+
+def drop_vector_db(name: str) -> None:
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+    with psycopg.connect(make_conninfo(VECTOR_DB, dbname="postgres"), autocommit=True) as conn:
+        conn.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+def start_r2():
+    """A local S3 server standing in for Cloudflare R2, with the bucket. Returns (server, endpoint)."""
+    import boto3
+    from moto.server import ThreadedMotoServer
+    port = free_port()
+    s3 = ThreadedMotoServer(ip_address="127.0.0.1", port=port, verbose=False)
+    s3.start()
+    endpoint = f"http://127.0.0.1:{port}"
+    boto3.client("s3", endpoint_url=endpoint, region_name="us-east-1", aws_access_key_id="e2e",
+                 aws_secret_access_key="e2e").create_bucket(Bucket="cgpt-e2e")
+    return s3, endpoint
+
+
+def start_server(log_path: Path, vector_db: str, r2_endpoint: str) -> subprocess.Popen:
+    env = {**os.environ, "DATABASE_URL": DB, "VECTOR_DATABASE_URL": vector_db, "CHAINLIT_AUTH_SECRET": SECRET,
+           "ADMIN_EMAILS": EMAIL, "OAUTH_GOOGLE_CLIENT_ID": "e2e-client", "OAUTH_GOOGLE_CLIENT_SECRET": "e2e-secret",
+           "CHAINLIT_URL": BASE, "PYTHONPATH": str(ROOT / "tests" / "e2e"), "CGPT_E2E_SHIMS": "1",
+           "R2_ENDPOINT": r2_endpoint, "R2_BUCKET": "cgpt-e2e", "R2_ACCESS_KEY_ID": "e2e", "R2_SECRET_ACCESS_KEY": "e2e"}
+    for k in ("IS_PULL_REQUEST", "RENDER_EXTERNAL_HOSTNAME", "RENDER_EXTERNAL_URL", "BUCKET_NAME", "R2_ACCOUNT_ID"):
         env.pop(k, None)
     if "--no-vector" in sys.argv:  # fuzzy retrieval only, when the embeddings API is unreachable
         env["CGPT_E2E_NO_VECTOR"] = "1"
@@ -89,10 +155,39 @@ def start_server(log_path: Path) -> subprocess.Popen:
                              "--host", "127.0.0.1"], cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
 
 
-def jwt() -> str:
+def jwt(email: str = EMAIL) -> str:
     from chainlit.auth.jwt import create_jwt
     from chainlit.user import User
-    return create_jwt(User(identifier=EMAIL, metadata={"provider": "google"}))
+    return create_jwt(User(identifier=email, metadata={"provider": "google"}))
+
+
+_expected_index = False
+
+
+def expected_command(query: str, exact: bool, kb_ids=None) -> str:
+    """What an Exact/Fuzzy Search over the original articles returns, computed here from knowledge_base.jsonl (the
+    server loads the same articles from its database: tests/test_kb.py shows they're identical)."""
+    global _expected_index
+    import kb_index
+    import search_engine
+    from retrievers import load_docs_from_jsonl
+    if not _expected_index:
+        kb_index.INDEX.set_documents([(str(n), "sunbeam", d) for n, d in
+                                      enumerate(load_docs_from_jsonl(str(ROOT / "knowledge_base.jsonl")))])
+        _expected_index = True
+    return search_engine.search_knowledge_base(query, exact=exact, kb_ids=kb_ids)
+
+
+def csrf_of(page: str) -> str:
+    return re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+
+
+def row_of(page: str, email: str) -> str:
+    m = re.search(rf'<tr[^>]*data-email="{re.escape(email)}".*?</tr>', page, re.S)
+    return m.group(0) if m else ""
+
+
+NO_COLLECTIONS = "no collection of articles is switched on for you"
 
 
 class Chat:
@@ -213,11 +308,105 @@ def make_image(path: Path):
     img.save(path)
 
 
+async def command(token: str, query: str, exact: bool = True) -> str:
+    chat = Chat(token)
+    await chat.connect()
+    _, ev = await chat.send(query, command="Exact Search" if exact else "Fuzzy Search")
+    await chat.close()
+    return (answers(ev)[-1]["final"] or "") if answers(ev) else ""
+
+
+async def collections_toggle_check(admin_token: str):
+    """A collection switched off at /admin stops that person's searches; switched on again, they're back."""
+    async with httpx.AsyncClient(base_url=BASE, cookies={"access_token": admin_token}) as admin:
+        csrf = csrf_of((await admin.get("/admin")).text)
+        r = await admin.post("/admin/kb/access", data={"csrf": csrf, "email": READER_A, "kb_id": "sunbeam",
+                                                       "enabled": "0"})
+        page = (await admin.get("/admin")).text
+        check("/admin switches Sunbeam off for one person", r.status_code == 303 and "Sunbeam ✗" in row_of(page, READER_A)
+              and "Sunbeam ✓" in row_of(page, READER_B))
+        off = await command(jwt(READER_A), "Rathotsava")
+        await admin.post("/admin/kb/access", data={"csrf": csrf, "email": READER_A, "kb_id": "sunbeam", "enabled": "1"})
+        back = await command(jwt(READER_A), "Rathotsava")
+    check("switched off: a clear message instead of results", NO_COLLECTIONS in off, off[:100])
+    check("switched on again: the same results as before", back == expected_command("Rathotsava", True))
+
+
+async def wait_for_job(client, job_id: int, done: tuple, timeout: float = 600) -> dict:
+    end = time.time() + timeout
+    while time.time() < end:
+        job = (await client.get(f"/admin/kb/jobs/{job_id}.json")).json()
+        if job["status"] in done or job["status"] == "failed":
+            return job
+        await asyncio.sleep(2)
+    raise TimeoutError(f"job {job_id} not {done} within {timeout}s")
+
+
+async def ingest_check(admin_token: str):
+    """An admin adds an issue to a new collection: upload (browser -> R2) -> job -> review -> publish; it is then
+    searchable for a person with that collection switched on, and not for one without."""
+    pdf = FIXTURE.read_bytes()
+    sha = hashlib.sha256(pdf).hexdigest()
+    async with httpx.AsyncClient(base_url=BASE, cookies={"access_token": admin_token}, timeout=60) as admin:
+        csrf = csrf_of((await admin.get("/admin/kb")).text)
+        r = await admin.post("/admin/kb/create", data={"csrf": csrf, **E2E_KB})
+        check("a collection is created at /admin/kb", r.status_code == 303 and E2E_KB["name"] in
+              (await admin.get("/admin/kb")).text)
+        upload = {"kb_id": E2E_KB["id"], "filename": "Sunbeam August 2024 sample.pdf", "size": len(pdf), "sha256": sha}
+        slot = await admin.post("/admin/kb/upload-url", json=upload, headers={"X-CSRF-Token": csrf})
+        bad = await admin.post("/admin/kb/upload-url", json={**upload, "size": 300 * 1024 * 1024},
+                               headers={"X-CSRF-Token": csrf})
+        check("upload slot: a presigned R2 URL; too big is refused", slot.status_code == 200 and bad.status_code == 400
+              and "X-Amz-Signature" in slot.json()["url"], bad.text[:80])
+        async with httpx.AsyncClient(timeout=120) as browser:  # the browser uploads straight to R2
+            put = await browser.put(slot.json()["url"], content=pdf, headers={"Content-Type": "application/pdf"})
+        done = await admin.post("/admin/kb/uploaded", json={**upload, "key": slot.json()["key"]},
+                                headers={"X-CSRF-Token": csrf})
+        check("upload to R2 and the job is queued", put.status_code == 200 and done.status_code == 200, done.text[:120])
+        job_id = done.json()["job_id"]
+        t0 = time.time()
+        job = await wait_for_job(admin, job_id, ("review",))
+        check("the job reads, splits and summarises the issue", job["status"] == "review" and job["articles"],
+              f"{time.time() - t0:.0f}s, {job['pages']} pages, {len(job['articles'])} articles, "
+              f"{len(job['flags'] or [])} flags, ${job['cost_usd']:.3f}, cited as {(job['issue'] or {}).get('source')}")
+        review = (await admin.get(f"/admin/kb/jobs/{job_id}")).text
+        first = job["articles"][0]
+        article = await admin.get(f"/admin/kb/jobs/{job_id}/articles/{first['n']}")
+        image = await admin.get(f"/admin/kb/jobs/{job_id}/pages/{first['start_page']}")
+        async with httpx.AsyncClient() as browser:
+            jpeg = await browser.get(image.headers.get("location", "http://invalid"))
+        check("review page: counts, articles, text beside the page image",
+              "contents entries matched" in review and html.escape(first["title"]) in review
+              and article.status_code == 200 and image.status_code == 302 and jpeg.content[:2] == b"\xff\xd8")
+        await admin.post(f"/admin/kb/jobs/{job_id}/publish", data={"csrf": csrf})
+        job = await wait_for_job(admin, job_id, ("published",), timeout=180)
+        source = (job["issue"] or {}).get("source", "")
+        check("publish puts the articles into the knowledge base", job["status"] == "published"
+              and job["published_articles"] == sum(1 for a in job["articles"] if not a["excluded"]), job.get("error"))
+        for kb_id, on in ((E2E_KB["id"], "1"), ("sunbeam", "0")):  # reader A: only the new collection
+            await admin.post("/admin/kb/access", data={"csrf": csrf, "email": READER_A, "kb_id": kb_id, "enabled": on})
+        page = (await admin.get("/admin")).text
+        check("/admin shows the new collection per person", "E2ETest ✓" in row_of(page, READER_A)
+              and "E2ETest ✗" in row_of(page, READER_B))
+    a_hits, b_hits = await command(jwt(READER_A), "Ekanta"), await command(jwt(READER_B), "Ekanta")
+    check("searchable with the collection switched on", f"(Source: {source})" in a_hits and "Sunbeam-" not in a_hits,
+          a_hits[:120].replace("\n", " "))
+    check("not searchable without it", source not in b_hits and b_hits == expected_command("Ekanta", True, ["sunbeam"]))
+    reader = Chat(jwt(READER_A))
+    await reader.connect()
+    _, ev = await reader.send("When does H.H. Swamiji observe Ekanta (Mauna) in December 2024?", modes=QUICK)
+    reply = (answers(ev)[-1]["final"] or "") if answers(ev) else ""
+    await reader.close()
+    check("the agent finds and cites the new articles", source in reply, reply[-200:].replace("\n", " "))
+
+
 async def main():
     await reset_db()
     work = Path(tempfile.mkdtemp(prefix="cgpt-e2e-"))
     log_path = work / "server.log"
-    server = start_server(log_path)
+    vector_db, vector_name = clone_vector_db()
+    r2, r2_endpoint = start_r2()
+    server = start_server(log_path, vector_db, r2_endpoint)
     try:
         async with httpx.AsyncClient(base_url=BASE) as client:
             for _ in range(240):
@@ -237,12 +426,11 @@ async def main():
             await chat.connect()
             check("answer modes offered on chat start", offered_modes(chat.events) == ANSWER_PICKER,
                   str(offered_modes(chat.events)))
-            import search_engine
-            for command, query in (("Exact Search", "Rathotsava"), ("Fuzzy Search", "rathotsava AND shirali")):
-                _, ev = await chat.send(query, command=command, modes=QUICK)  # commands ignore the answer mode
+            for cmd, query in (("Exact Search", "Rathotsava"), ("Fuzzy Search", "rathotsava AND shirali")):
+                _, ev = await chat.send(query, command=cmd, modes=QUICK)  # commands ignore the answer mode
                 (m,) = answers(ev)
-                expected = search_engine.search_knowledge_base(query, exact=command == "Exact Search")
-                check(f"{command} unchanged", m["final"] == expected and m["data"].get("tags") == ["command_output"])
+                expected = expected_command(query, exact=cmd == "Exact Search")
+                check(f"{cmd} unchanged", m["final"] == expected and m["data"].get("tags") == ["command_output"])
             rows = await db_steps(chat.thread_id)
             check("command output marked in saved metadata",
                   [r["metadata"] for r in rows if r["type"] == "assistant_message"] == ['{"cgpt_kind": "command_output"}'] * 2,
@@ -251,6 +439,7 @@ async def main():
                 r = await client.get(f"/admin/chat/{chat.thread_id}")
                 check("/admin renders the thread", r.status_code == 200 and "Rathotsava" in r.text, f"HTTP {r.status_code}")
             await chat.close()
+            await collections_toggle_check(token)
             return
 
         # 1-2. a new chat: streaming, saved == displayed, steps
@@ -285,12 +474,11 @@ async def main():
         check("image upload used", "21 april" in reply.lower() or "april 21" in reply.lower(), reply[-200:].replace("\n", " "))
 
         # 4. commands
-        import search_engine
-        for command, query in (("Exact Search", "Rathotsava"), ("Fuzzy Search", "rathotsava AND shirali")):
-            _, ev = await chat.send(query, command=command)
+        for cmd, query in (("Exact Search", "Rathotsava"), ("Fuzzy Search", "rathotsava AND shirali")):
+            _, ev = await chat.send(query, command=cmd)
             (m,) = answers(ev)
-            expected = search_engine.search_knowledge_base(query, exact=command == "Exact Search")
-            check(f"{command} unchanged", m["final"] == expected and m["data"].get("tags") == ["command_output"])
+            expected = expected_command(query, exact=cmd == "Exact Search")
+            check(f"{cmd} unchanged", m["final"] == expected and m["data"].get("tags") == ["command_output"])
 
         # 5. edit
         edit_chat = Chat(token)
@@ -336,17 +524,29 @@ async def main():
             r = await client.get(f"/admin/chat/{thread_id}")
             snippet = html.escape(a["final"].strip()[:60])
             check("/admin renders the new-stack thread", r.status_code == 200 and snippet in r.text, f"HTTP {r.status_code}")
+
+        # 9. collections: switched off for one person at /admin
+        await collections_toggle_check(token)
+
+        # 10. adding a magazine issue, and who can search it
+        if FIXTURE.exists():
+            await ingest_check(token)
+        else:
+            print(f"SKIP  adding an issue ({FIXTURE.relative_to(ROOT)} isn't there; see this file's docstring)")
     finally:
         server.terminate()
         try:
             server.wait(timeout=20)
         except subprocess.TimeoutExpired:
             server.kill()
+        r2.stop()
+        drop_vector_db(vector_name)
         print(f"server log: {log_path}")
-    failed = [k for k, ok in RESULTS.items() if not ok]
-    print(json.dumps({"passed": len(RESULTS) - len(failed), "failed": failed}))
-    sys.exit(1 if failed else 0)
 
 
 if __name__ == "__main__":
     asyncio.run(main())
+    # Here, not in main(): --no-llm returns early, and its result must count too.
+    failed = [k for k, ok in RESULTS.items() if not ok]
+    print(json.dumps({"passed": len(RESULTS) - len(failed), "failed": failed}))
+    sys.exit(1 if failed else 0)
