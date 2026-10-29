@@ -19,6 +19,11 @@ Articles belong to a knowledge base (`kb_id`, see kb.py). A search can be limite
 enough rows pass the filter, so a filtered search still returns its k nearest. Callers pass no filter when the user
 can search every knowledge base that has articles, so that search is exactly the unfiltered one.
 
+Long articles also have chunk embeddings (`kb_chunk`, see chunking.py). The search the agent uses
+(max_marginal_relevance_search_by_vector) picks articles exactly as before, then adds up to CHUNK_EXTRA more: the
+articles whose chunks are nearest the query, if not picked already. Adding rather than re-ranking means it never
+drops an article the plain search finds. CGPT_CHUNK_SEARCH=0 turns it off.
+
 DSN: VECTOR_DATABASE_URL, else DATABASE_URL (production sets only DATABASE_URL). scripts/load_vectors.py builds and
 loads the table using DDL and pinecone_style_metadata() from here.
 """
@@ -38,6 +43,8 @@ from pgvector.psycopg import register_vector
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
+
+import chunking
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +67,27 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
 CREATE INDEX IF NOT EXISTS {INDEX} ON {TABLE} USING hnsw (embedding halfvec_ip_ops)
     WITH (m = 32, ef_construction = 200);
 """
+
+CHUNK_TABLE = "kb_chunk"
+# Chunks of long articles (chunking.py). kb.ensure_schema runs this on existing databases. Deleting or re-publishing
+# an article deletes its chunks (ON DELETE CASCADE). kb_id is copied from the article for filtered searches; like
+# kb_article it deliberately has no index (see kb.ARTICLE_COLUMNS).
+CHUNK_DDL = f"""
+CREATE TABLE IF NOT EXISTS {CHUNK_TABLE} (
+    article_id text NOT NULL REFERENCES {TABLE}(id) ON DELETE CASCADE,
+    n          int NOT NULL,              -- 0, 1, ... within the article
+    start_char int NOT NULL,              -- the chunk is content[start_char:end_char]
+    end_char   int NOT NULL,
+    kb_id      text NOT NULL,
+    embedding  halfvec({chunking.CHUNK_DIM}) NOT NULL,
+    PRIMARY KEY (article_id, n)
+);
+CREATE INDEX IF NOT EXISTS {CHUNK_TABLE}_embedding_hnsw ON {CHUNK_TABLE} USING hnsw (embedding halfvec_ip_ops)
+    WITH (m = 32, ef_construction = 200);
+"""
+# Each search adds up to CHUNK_EXTRA articles found through their chunks, looking at the CHUNK_FETCH nearest chunks.
+CHUNK_EXTRA = 2
+CHUNK_FETCH = 60
 
 
 def vector_dsn() -> str | None:
@@ -169,13 +197,15 @@ class PgVectorStore(VectorStore):
     """LangChain VectorStore over the `kb_article` table. Sync API (the retriever runs in a worker thread)."""
 
     def __init__(self, embedding: Embeddings, dsn: str | None = None, *, ef_search: int | None = None,
-                 pool_size: int = 4):
+                 pool_size: int = 4, chunk_search: bool | None = None):
         dsn = dsn or vector_dsn()
         if not dsn:
             raise RuntimeError("No vector database configured: set VECTOR_DATABASE_URL or DATABASE_URL")
         self._dsn = dsn
         self._embedding = embedding
         self.ef_search = int(ef_search or os.environ.get("CGPT_VECTOR_EF_SEARCH") or DEFAULT_EF_SEARCH)
+        self.chunk_search = (os.environ.get("CGPT_CHUNK_SEARCH", "1") != "0") if chunk_search is None else chunk_search
+        self._no_chunk_table_logged = False
         self._pool = ConnectionPool(dsn, min_size=0, max_size=pool_size, kwargs={"autocommit": True},
                                     configure=self._configure, check=ConnectionPool.check_connection,
                                     name="kb-vector-store", open=True)
@@ -203,6 +233,7 @@ class PgVectorStore(VectorStore):
         connections register the halfvec type, which needs the extension to exist already."""
         with psycopg.connect(self._dsn, autocommit=True) as conn:
             conn.execute(DDL)
+            conn.execute(CHUNK_DDL)
 
     def existing_ids(self, ids: list[str]) -> set[str]:
         with self._pool.connection() as conn:
@@ -244,10 +275,11 @@ class PgVectorStore(VectorStore):
         return f"SELECT {cols} FROM {TABLE} {where}ORDER BY embedding <#> %(q)s LIMIT %(k)s"
 
     def _nearest(self, query_embedding: List[float], k: int, with_vectors: bool = False,
-                 kb_ids: Optional[list[str]] = None) -> list[tuple]:
+                 kb_ids: Optional[list[str]] = None, with_ids: bool = False) -> list[tuple]:
         """The k nearest articles by inner product (via the HNSW index), optionally only in some knowledge bases:
-        (content, metadata, -ip[, embedding])."""
-        cols = "content, metadata, embedding <#> %(q)s" + (", embedding" if with_vectors else "")
+        (content, metadata, -ip[, embedding][, id])."""
+        cols = ("content, metadata, embedding <#> %(q)s" + (", embedding" if with_vectors else "")
+                + (", id" if with_ids else ""))
         with self._pool.connection() as conn:
             return conn.execute(self._query(cols, kb_ids),
                                 {"q": HalfVector(query_embedding), "k": k, "kbs": kb_ids}).fetchall()
@@ -293,12 +325,46 @@ class PgVectorStore(VectorStore):
     def max_marginal_relevance_search_by_vector(self, embedding: List[float], k: int = 5, fetch_k: int = 15,
                                                 lambda_mult: float = 0.5, filter: Optional[dict] = None,
                                                 **kwargs: Any) -> List[Document]:
-        rows = self._nearest(embedding, fetch_k, with_vectors=True, kb_ids=self._kb_filter(filter))
-        if not rows:
-            return []
+        kb_ids = self._kb_filter(filter)
+        rows = self._nearest(embedding, fetch_k, with_vectors=True, kb_ids=kb_ids, with_ids=True)
         selected = _maximal_marginal_relevance(embedding, [r[3].to_list() for r in rows], k=k,
-                                               lambda_mult=lambda_mult)
-        return [Document(page_content=rows[i][0], metadata=rows[i][1]) for i in selected]
+                                               lambda_mult=lambda_mult) if rows else []
+        docs = [Document(page_content=rows[i][0], metadata=rows[i][1]) for i in selected]
+        if self.chunk_search and CHUNK_EXTRA:
+            docs += self._found_by_chunks(embedding, {rows[i][4] for i in selected}, kb_ids)
+        return docs
+
+    def _nearest_chunks(self, query_embedding: List[float], k: int,
+                        kb_ids: Optional[list[str]] = None) -> list[tuple[str, float]]:
+        """The k nearest chunks: (article id, similarity). None if the chunk table doesn't exist yet."""
+        where = "WHERE kb_id = ANY(%(kbs)s) " if kb_ids is not None else ""
+        sql = (f"SELECT article_id, -(embedding <#> %(q)s) FROM {CHUNK_TABLE} {where}"
+               "ORDER BY embedding <#> %(q)s LIMIT %(k)s")
+        try:
+            with self._pool.connection() as conn:
+                return conn.execute(sql, {"q": HalfVector(chunking.shorten(query_embedding)), "k": k,
+                                          "kbs": kb_ids}).fetchall()
+        except psycopg.errors.UndefinedTable:
+            if not self._no_chunk_table_logged:
+                logger.warning("no %s table: searching whole articles only", CHUNK_TABLE)
+                self._no_chunk_table_logged = True
+            return []
+
+    def _found_by_chunks(self, embedding: List[float], picked: set[str],
+                         kb_ids: Optional[list[str]]) -> List[Document]:
+        """Up to CHUNK_EXTRA articles not in `picked`, in order of their nearest chunk to the query."""
+        extra: list[str] = []
+        for article_id, _ in self._nearest_chunks(embedding, CHUNK_FETCH, kb_ids):
+            if article_id not in picked and article_id not in extra:
+                extra.append(article_id)
+                if len(extra) == CHUNK_EXTRA:
+                    break
+        if not extra:
+            return []
+        with self._pool.connection() as conn:
+            found = {r[2]: r for r in conn.execute(f"SELECT content, metadata, id FROM {TABLE} WHERE id = ANY(%s)",
+                                                   (extra,)).fetchall()}
+        return [Document(page_content=found[a][0], metadata=found[a][1]) for a in extra if a in found]
 
     @classmethod
     def from_texts(cls, texts: List[str], embedding: Embeddings, metadatas: Optional[List[dict]] = None,

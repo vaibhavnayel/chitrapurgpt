@@ -26,6 +26,7 @@ import uuid
 import weakref
 from pathlib import Path
 
+import chunking
 import models
 
 from . import assemble as asm
@@ -487,9 +488,15 @@ class Worker:
         info = asm.IssueInfo(label=issue.get("label", ""), published_date=issue.get("published_date", ""),
                              source=issue["source"])
         texts = [embedding_text(a.title or "", a.summary or "", a.text) for a in articles]
-        vectors = await asyncio.to_thread(self.embed, texts)
-        rows = [(f"{info.source}#{a.n:03d}", a.text, asm.doc_metadata(a, info), v) for a, v in zip(articles, vectors)]
-        replaced = await asyncio.to_thread(write_articles, self.db, job_id, job["kb_id"], info.source, rows)
+        chunks = [(ai, n, start, end, text) for ai, a in enumerate(articles)
+                  for n, (start, end, text) in enumerate(chunking.article_chunks(a.title or "", a.text))]
+        vectors = await asyncio.to_thread(self.embed, texts + [c[4] for c in chunks])
+        rows = [(f"{info.source}#{a.n:03d}", a.text, asm.doc_metadata(a, info), v)
+                for a, v in zip(articles, vectors[:len(texts)])]
+        chunk_rows = [(rows[ai][0], n, start, end, chunking.shorten(v))
+                      for (ai, n, start, end, _), v in zip(chunks, vectors[len(texts):])]
+        replaced = await asyncio.to_thread(write_articles, self.db, job_id, job["kb_id"], info.source, rows,
+                                           chunk_rows)
         await asyncio.to_thread(kb_index.INDEX.refresh, self.db)
         async with pool.acquire() as conn, conn.transaction():
             if replaced:
@@ -516,9 +523,11 @@ class Worker:
         self._index_signature = signature
 
 
-def write_articles(db: str | None, job_id: int, kb_id: str, source: str, rows: list[tuple]) -> set[int]:
+def write_articles(db: str | None, job_id: int, kb_id: str, source: str, rows: list[tuple],
+                   chunk_rows: list[tuple] = ()) -> set[int]:
     """In one transaction: delete the rows of any earlier publish of this issue (this job, or another upload of the
-    same issue in the same knowledge base), insert the new ones. Returns the job ids whose rows were replaced."""
+    same issue in the same knowledge base; their chunks go with them), insert the new articles and their chunks
+    (article id, n, start, end, shortened vector). Returns the job ids whose rows were replaced."""
     import psycopg
     from pgvector import HalfVector
     from pgvector.psycopg import register_vector
@@ -541,6 +550,10 @@ def write_articles(db: str | None, job_id: int, kb_id: str, source: str, rows: l
                        VALUES (%s, %s, %s, %s, %s, nextval('kb_article_seq'), %s)""",
                     [(i, text, Jsonb(pinecone_style_metadata(meta)), HalfVector(vec), kb_id, job_id)
                      for i, text, meta, vec in rows])
+                cur.executemany(
+                    """INSERT INTO kb_chunk (article_id, n, start_char, end_char, kb_id, embedding)
+                       VALUES (%s, %s, %s, %s, %s, %s)""",
+                    [(a, n, start, end, kb_id, HalfVector(vec)) for a, n, start, end, vec in chunk_rows])
     return replaced
 
 

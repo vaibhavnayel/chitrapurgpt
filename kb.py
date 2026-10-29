@@ -111,6 +111,7 @@ def ensure_schema(db: str | None = None, *, legacy_jsonl: Path | None = LEGACY_J
             for name, sql in ARTICLE_INDEXES.items():
                 if name not in indexes:
                     conn.execute(sql)
+            conn.execute(vector_store.CHUNK_DDL)  # chunks of long articles (chunking.py); idempotent
         if legacy_jsonl is not None:
             with conn.transaction():
                 conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK,))
