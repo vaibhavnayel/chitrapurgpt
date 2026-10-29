@@ -284,3 +284,27 @@ def test_a_bad_upload_fails_with_a_clear_message(env):
             await jobs.delete_job(j, "admin@x", storage.Storage())
 
     run(scenario)
+
+
+def test_publishing_writes_chunks_and_a_republish_replaces_them(env):
+    import chunking
+    text = "\n\n".join(" ".join(f"w{p}_{i}" for i in range(29)) + "." for p in range(30))  # 900 words
+    vec = fake_embed(["x"])[0]
+    meta = {"source": "Sunbeam-2098-May.txt", "title": "A long talk", "summary": "s", "start_page": 3, "end_page": 9}
+    chunks = chunking.article_chunks("A long talk", text)
+    assert len(chunks) > 1
+    jobs.write_articles(env["db"], 9001, "sunbeam", "Sunbeam-2098-May.txt",
+                        [("Sunbeam-2098-May.txt#001", text, meta, vec)],
+                        [("Sunbeam-2098-May.txt#001", n, s, e, chunking.shorten(vec)) for n, (s, e, _) in enumerate(chunks)])
+    with psycopg.connect(env["db"]) as conn:
+        got = conn.execute("SELECT n, start_char, end_char, kb_id FROM kb_chunk WHERE article_id = %s ORDER BY n",
+                           ("Sunbeam-2098-May.txt#001",)).fetchall()
+    assert got == [(n, s, e, "sunbeam") for n, (s, e, _) in enumerate(chunks)]
+
+    # Another upload of the same issue replaces the articles, and their chunks with them.
+    replaced = jobs.write_articles(env["db"], 9002, "sunbeam", "Sunbeam-2098-May.txt",
+                                   [("Sunbeam-2098-May.txt#001", "Now short.", meta, vec)], [])
+    with psycopg.connect(env["db"], autocommit=True) as conn:
+        assert replaced == {9001}
+        assert conn.execute("SELECT count(*) FROM kb_chunk").fetchone()[0] == 0
+        conn.execute("DELETE FROM kb_article WHERE issue_id = 9002")

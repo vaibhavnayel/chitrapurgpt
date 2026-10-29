@@ -101,6 +101,11 @@ The articles live in the app's own Postgres, in table `kb_article`, which both h
   to record the original articles' order (so fuzzy-search ties break as before).
 - An HNSW index (`halfvec_ip_ops`, `m = 32, ef_construction = 200`). Search is by inner product (the embeddings are
   unit-length): the 15 nearest, then MMR picks 5.
+- **Chunks** (`kb_chunk`, `chunking.py`): articles of 300+ words are also embedded in ~250-word overlapping windows,
+  each with the article title on top, stored at 1,024 dimensions. Each search then adds up to 2 more whole articles
+  whose chunks best match the query. That finds passages buried deep inside long articles: on 160 such questions, 90%
+  -> 94% found (embeddings alone 29% -> 71%), nothing the plain search found is lost, about 12% more articles read.
+  New issues get chunks when published; `scripts/build_chunks.py` adds any missing. `CGPT_CHUNK_SEARCH=0` turns it off.
 - The table, index and metadata format are defined once, in `vector_store.py`.
 
 Settings:

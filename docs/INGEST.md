@@ -49,7 +49,7 @@ this issue" step).
 | Assemble | Article text = the blocks in range order, one paragraph each (headlines on their own lines, tables as Markdown, captions kept, the reader's picture descriptions left out). Over ~8,000 tokens → "Title (part k of n)", split at block boundaries, never dropped. Under 40 characters (a section divider) → excluded to start with | – |
 | Summaries | 1–3 sentences per article | Haiku 5.5, thinking off |
 | Review | `/admin/kb/jobs/<id>`; page previews (1200 px JPEG) were stored in R2 while reading, or are rendered on demand | – |
-| Publish | Embed (text-embedding-3-large, as the original articles; an article that is mostly in an Indian script is embedded by its English title and summary instead, so English questions find it, see `embedding_text`), then in **one transaction** delete any rows from an earlier publish of the same issue and insert the new ones into `kb_article`; refresh the in-memory index | OpenAI embeddings |
+| Publish | Embed (text-embedding-3-large, as the original articles; an article that is mostly in an Indian script is embedded by its English title and summary instead, so English questions find it, see `embedding_text`), also embed the chunks of each long article (`chunking.py`), then in **one transaction** delete any rows from an earlier publish of the same issue (their chunks go with them) and insert the new articles into `kb_article` and their chunks into `kb_chunk`; refresh the in-memory index | OpenAI embeddings |
 
 **Metadata** of a published article has exactly the original keys: `source` (e.g. `Sunbeam-2025-February.txt`,
 `Sunbeam-2026-July-August.txt`; other collections use their own prefix), `published_date` (DD-MM-YYYY), `title`,

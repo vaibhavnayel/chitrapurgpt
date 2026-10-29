@@ -99,7 +99,7 @@ def store(test_dsn):
     s.ensure_schema()
     s.ensure_schema()  # idempotent
     with psycopg.connect(test_dsn, autocommit=True) as conn:
-        conn.execute("TRUNCATE kb_article")
+        conn.execute("TRUNCATE kb_article CASCADE")  # and its chunks
     yield s
     s.close()
 
@@ -230,3 +230,69 @@ def test_loader_metadata_matches_pinecone_offline():
               if f'"title":"Our Guruparampara From 1708 A.D."' in line.replace(": ", ":"))
     doc = Document(page_content="x", metadata=pinecone_style_metadata(kb["metadata"]))
     assert format_docs([doc]).split("\nContent:\n")[0] == "0. " + FIXTURE.rstrip("\n")
+
+
+# ---------- chunks of long articles (chunking.py) ----------
+
+def add_chunk(dsn, article_id, vector, n=0, kb_id="sunbeam"):
+    import chunking
+    from pgvector import HalfVector
+    from pgvector.psycopg import register_vector
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        register_vector(conn)
+        conn.execute("""INSERT INTO kb_chunk (article_id, n, start_char, end_char, kb_id, embedding)
+                        VALUES (%s, %s, 0, 1, %s, %s)""", (article_id, n, kb_id, HalfVector(chunking.shorten(vector))))
+
+
+def test_a_matching_chunk_brings_in_its_whole_article(store, test_dsn):
+    add_designed(store)
+    [d_id] = store.add_texts(["D, a long article"], metadatas=[meta("D")])  # its own vector is far from q
+    add_chunk(test_dsn, d_id, VECTORS["q"])                                   # but a passage inside it matches q
+    picks = store.max_marginal_relevance_search("q", k=2, fetch_k=4)
+    assert [d.page_content for d in picks] == ["A", "B", "D, a long article"], "added after the usual picks, whole"
+    assert picks[2].metadata == pinecone_style_metadata(meta("D"))
+
+    off = PgVectorStore(FakeEmbeddings(dict(VECTORS)), dsn=test_dsn, chunk_search=False)
+    try:
+        assert [d.page_content for d in off.max_marginal_relevance_search("q", k=2, fetch_k=4)] == ["A", "B"]
+    finally:
+        off.close()
+
+    store.delete([d_id])
+    with psycopg.connect(test_dsn) as conn:
+        assert conn.execute("SELECT count(*) FROM kb_chunk").fetchone()[0] == 0, "chunks go with their article"
+
+
+def test_chunk_hits_respect_the_knowledge_base_filter(store, test_dsn):
+    add_designed(store)
+    [d_id] = store.add_texts(["D"], metadatas=[meta("D")])
+    with psycopg.connect(test_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE kb_article SET kb_id = 'other' WHERE id = %s", (d_id,))
+    add_chunk(test_dsn, d_id, VECTORS["q"], kb_id="other")
+    only_sunbeam = store.max_marginal_relevance_search("q", k=2, fetch_k=4, filter={"kb_id": ["sunbeam"]})
+    assert [d.page_content for d in only_sunbeam] == ["A", "B"]
+    both = store.max_marginal_relevance_search("q", k=2, fetch_k=4, filter={"kb_id": ["sunbeam", "other"]})
+    assert [d.page_content for d in both] == ["A", "B", "D"]
+
+
+def test_chunk_finds_are_capped_deduplicated_and_never_replace_a_pick(store, test_dsn):
+    import vector_store as vs
+    ids = add_designed(store)
+    add_chunk(test_dsn, ids[0], VECTORS["q"])                 # A is picked anyway: not added twice
+    more = store.add_texts(["D", "E", "F"], metadatas=[meta(t) for t in "DEF"])
+    add_chunk(test_dsn, more[0], basis(e0=0.99, e5=0.14))      # D, E, F each have a chunk near q, D's nearest
+    add_chunk(test_dsn, more[0], basis(e0=0.90, e6=0.44), n=1)  # (a second, weaker chunk of D)
+    add_chunk(test_dsn, more[1], basis(e0=0.97, e7=0.24))
+    add_chunk(test_dsn, more[2], basis(e0=0.95, e8=0.31))
+    got = [d.page_content for d in store.max_marginal_relevance_search("q", k=2, fetch_k=4)]
+    assert vs.CHUNK_EXTRA == 2 and got == ["A", "B", "D", "E"]
+
+
+def test_search_works_before_the_chunk_table_exists(store, test_dsn):
+    add_designed(store)
+    with psycopg.connect(test_dsn, autocommit=True) as conn:
+        conn.execute("DROP TABLE kb_chunk")
+    try:
+        assert [d.page_content for d in store.max_marginal_relevance_search("q", k=2, fetch_k=4)] == ["A", "B"]
+    finally:
+        store.ensure_schema()
