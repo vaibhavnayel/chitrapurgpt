@@ -62,10 +62,13 @@ def main() -> None:
             vectors = iter(_embed(texts))
             rows = [(a[0], n, s, e, a[1], HalfVector(chunking.shorten(next(vectors))))
                     for a, c in part for n, (s, e, _) in enumerate(c)]
+            # COPY: one round trip per batch (row-by-row INSERTs to a far-away database take minutes per batch).
+            # No conflicts are possible: todo() skips articles that have chunks, and each batch commits whole.
             with conn.transaction(), conn.cursor() as cur:
-                cur.executemany(f"""INSERT INTO {vector_store.CHUNK_TABLE}
-                                    (article_id, n, start_char, end_char, kb_id, embedding)
-                                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""", rows)
+                with cur.copy(f"COPY {vector_store.CHUNK_TABLE} (article_id, n, start_char, end_char, kb_id, embedding) "
+                              "FROM STDIN") as copy:
+                    for row in rows:
+                        copy.write_row(row)
             done += len(rows)
             print(f"  {i + len(part)}/{len(plan)} articles, {done} chunks, {time.time() - t0:.0f}s", flush=True)
         total = conn.execute(f"SELECT count(*), pg_total_relation_size('{vector_store.CHUNK_TABLE}') "
