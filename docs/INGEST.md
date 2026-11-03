@@ -7,7 +7,8 @@ searches what), `kb_index.py` (articles in memory), `admin_kb.py` (the admin pag
 
 ## What an admin does
 
-1. **Collections & uploads** (`/admin/kb`): pick a collection (Sunbeam by default) and a PDF, press *Upload and
+1. **Collections & uploads** (`/admin/kb`): pick a collection (Sunbeam by default) and one or more PDFs (one issue
+   per file; several files are uploaded one after the other, each becoming its own job), press *Upload and
    process*. The browser checks the file (PDF, ≤ 250 MB), computes its SHA-256 and uploads it straight to Cloudflare
    R2; the app then queues a job. If the same file was uploaded before, the admin is asked to confirm.
 2. The job page shows progress (fetching, reading pages *n/N*, splitting, summaries), then the **review**:
@@ -85,6 +86,12 @@ most 8 page images are in flight.
   search is exactly the one before this change.
 - The agent's prompt names the person's collections, except for Sunbeam alone (then it's unchanged).
 - Someone with no collection switched on gets a clear message instead of an answer.
+- **Choosing collections in a chat** (`kb_picker.py`): someone with more than one collection switched on gets a
+  **Collections** button in the message box (Chainlit chat settings; `public/custom.js` adds the label to its gear
+  icon). It has an "All my collections" tick box and one per collection; a new chat searches them all. The choice
+  narrows that chat's searches (agent and Exact/Fuzzy Search) and is saved with the chat, so a reopened chat keeps
+  it; with "All" ticked it also covers collections switched on since. It never widens access: admins still decide
+  who may search what. Nothing ticked → a notice asking them to tick one, no agent run.
 
 ## Costs and times (eval on 40 born-digital issues, 2021–2026; `.cache/ingest-eval/REPORT.local.md`)
 

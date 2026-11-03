@@ -15,7 +15,7 @@ base of ~5,900 magazine articles (Chitrapur Sunbeam), with citations. Built on C
 - Admins add magazine issues (PDF) at `/admin/kb`: every page is read, the issue is split into articles and
   summarised, and an admin reviews it before publishing (see `docs/INGEST.md`)
 - Collections (e.g. Sunbeam, later KSA) that admins switch on or off per person; each person's questions search
-  only their collections
+  only their collections, and people with several pick which ones a chat searches (the **Collections** button)
 
 ## How it works
 

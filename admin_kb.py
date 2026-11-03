@@ -144,13 +144,15 @@ onsubmit="return confirm('Delete this empty collection?')" style="margin-top:8px
                       f'{_e(k["name"])}</option>' for k in kbs)
     upload = f"""<div class="card"><form id="upload" style="margin:0">
 <label><strong>Collection</strong> <select id="up-kb">{options}</select></label><br>
-<label style="display:block;margin-top:8px"><strong>Magazine issue (PDF)</strong><br>
-<input id="up-file" type="file" accept="application/pdf,.pdf" required></label>
+<label style="display:block;margin-top:8px"><strong>Magazine issues (PDF)</strong>
+<span class="muted">one issue per file; you can choose several files at once</span><br>
+<input id="up-file" type="file" accept="application/pdf,.pdf" multiple required></label>
 <button class="primary" style="margin-top:10px">Upload and process</button>
+<ul id="up-list" style="margin:8px 0 0;padding-left:20px"></ul>
 <p id="up-status" class="muted" style="margin:8px 0 0"></p></form></div>
-<p class="muted">The PDF goes straight to storage (up to {storage.MAX_UPLOAD_BYTES // 1024 // 1024} MB), then
-ChitrapurGPT reads every page, splits the issue into articles and writes a summary of each, which takes a few
-minutes. Nothing is searchable until you review it and press Publish.</p>
+<p class="muted">Each PDF goes straight to storage (up to {storage.MAX_UPLOAD_BYTES // 1024 // 1024} MB each), one
+after the other, then ChitrapurGPT reads every page, splits the issue into articles and writes a summary of each,
+which takes a few minutes per issue. Nothing is searchable until you review each issue and press Publish.</p>
 <script>{UPLOAD_JS.replace("__CSRF__", csrf).replace("__MAX__", str(storage.MAX_UPLOAD_BYTES))}</script>""" if r2 else \
         """<div class="banner warn">Uploads need Cloudflare R2: set R2_ACCOUNT_ID (or R2_ENDPOINT), R2_BUCKET,
 R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
@@ -205,7 +207,7 @@ async function post(url, data){
   if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
   return j;
 }
-function put(url, file){
+function put(url, file, say){
   return new Promise(function(resolve, reject){
     var x = new XMLHttpRequest(); x.open('PUT', url); x.setRequestHeader('Content-Type', 'application/pdf');
     x.upload.onprogress = function(e){ if (e.lengthComputable) say('Uploading… ' + Math.round(100*e.loaded/e.total) + '%'); };
@@ -214,25 +216,52 @@ function put(url, file){
     x.send(file);
   });
 }
+// One file: check it, upload it, queue it. Returns the job, or null if the admin skipped a duplicate. Throws on
+// errors. `say` reports progress for this file.
+async function uploadOne(file, kbId, say){
+  if (file.size > MAX) throw new Error('This file is over ' + Math.round(MAX/1048576) + ' MB.');
+  var head = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
+  if (String.fromCharCode.apply(null, head).indexOf('%PDF-') < 0) throw new Error('This file is not a PDF.');
+  say('Checking the file…');
+  var digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  var sha = Array.from(new Uint8Array(digest)).map(function(b){ return b.toString(16).padStart(2, '0'); }).join('');
+  var slot = await post('/admin/kb/upload-url', {kb_id: kbId, filename: file.name, size: file.size, sha256: sha});
+  if (slot.warning && !confirm(file.name + ': ' + slot.warning)) return null;
+  await put(slot.url, file, say);
+  say('Uploaded. Queuing it…');
+  return await post('/admin/kb/uploaded', {kb_id: kbId, key: slot.key, filename: file.name, size: file.size, sha256: sha});
+}
 form.addEventListener('submit', async function(e){
   e.preventDefault();
-  var file = document.getElementById('up-file').files[0], kbId = document.getElementById('up-kb').value;
-  if (!file) return;
-  var button = form.querySelector('button'); button.disabled = true; window.cgptUploading = true;
-  try {
-    if (file.size > MAX) throw new Error('This file is over ' + Math.round(MAX/1048576) + ' MB.');
-    var head = new Uint8Array(await file.slice(0, 1024).arrayBuffer());
-    if (String.fromCharCode.apply(null, head).indexOf('%PDF-') < 0) throw new Error('This file is not a PDF.');
-    say('Checking the file…');
-    var digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
-    var sha = Array.from(new Uint8Array(digest)).map(function(b){ return b.toString(16).padStart(2, '0'); }).join('');
-    var slot = await post('/admin/kb/upload-url', {kb_id: kbId, filename: file.name, size: file.size, sha256: sha});
-    if (slot.warning && !confirm(slot.warning)) { say('Cancelled. Nothing was uploaded.'); button.disabled = false; window.cgptUploading = false; return; }
-    await put(slot.url, file);
-    say('Uploaded. Queuing it…');
-    var job = await post('/admin/kb/uploaded', {kb_id: kbId, key: slot.key, filename: file.name, size: file.size, sha256: sha});
-    location.href = job.redirect;
-  } catch (err) { say(err.message); button.disabled = false; window.cgptUploading = false; }
+  var input = document.getElementById('up-file'), files = Array.from(input.files), kbId = document.getElementById('up-kb').value;
+  if (!files.length) return;
+  var button = form.querySelector('button'); button.disabled = true; input.disabled = true; window.cgptUploading = true;
+  var list = document.getElementById('up-list'); list.innerHTML = '';
+  var lines = files.map(function(f){
+    var li = document.createElement('li'); li.textContent = f.name + ': waiting'; list.appendChild(li); return li;
+  });
+  var jobs = [], skipped = 0, failed = 0;
+  for (var i = 0; i < files.length; i++) {
+    var li = lines[i], name = files[i].name;
+    var sayFile = (function(li, name){ return function(t){ li.textContent = name + ': ' + t; }; })(li, name);
+    if (files.length > 1) say('File ' + (i + 1) + ' of ' + files.length + '. Please keep this page open.');
+    try {
+      var job = await uploadOne(files[i], kbId, sayFile);
+      if (job) { jobs.push(job); li.innerHTML = ''; li.appendChild(document.createTextNode(name + ': queued as ')); var a = document.createElement('a'); a.href = job.redirect; a.textContent = '#' + job.job_id; li.appendChild(a); }
+      else { skipped++; sayFile('skipped (already uploaded before). Nothing was uploaded.'); }
+    } catch (err) { failed++; sayFile('not uploaded. ' + err.message); li.style.color = '#c62828'; }
+  }
+  window.cgptUploading = false;
+  if (files.length === 1 && jobs.length === 1) { location.href = jobs[0].redirect; return; }
+  var parts = [jobs.length + ' queued'];
+  if (skipped) parts.push(skipped + ' skipped');
+  if (failed) parts.push(failed + ' not uploaded');
+  if (files.length === 1) { say(failed ? 'The file was not uploaded.' : 'Cancelled. Nothing was uploaded.'); }
+  else if (!jobs.length) say('Done: nothing was queued (' + parts.slice(1).join(', ') + ').');
+  else say('Done: ' + parts.join(', ') + '. They are processed one after the other.' +
+           (failed ? ' Reload the page to see them in the list below.' : ''));
+  button.disabled = false; input.disabled = false; input.value = '';
+  if (jobs.length && !failed) setTimeout(function(){ location.reload(); }, 2500);
 });
 })();
 """

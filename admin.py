@@ -194,7 +194,7 @@ def _back_to_dashboard(message: str, kind: str = "ok") -> RedirectResponse:
 
 @router.get("/admin/me")
 async def me(request: Request):
-    """Used by public/admin-button.js to show the Admin button in the chat page to admins only."""
+    """Used by public/custom.js to show the Admin button in the chat page to admins only."""
     return JSONResponse({"admin": access.is_admin(_signed_in_email(request))},
                         headers={"Cache-Control": "no-store"})
 

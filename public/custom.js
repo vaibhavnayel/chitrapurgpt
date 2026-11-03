@@ -1,6 +1,7 @@
-// Adds an "Admin" button next to "Readme" in the chat page header, for admins only.
-// Loaded through custom_js in .chainlit/config.toml. The server decides who is an admin
-// (GET /admin/me); the button is only a shortcut, /admin checks again itself.
+// Small additions to the chat page, loaded through custom_js in .chainlit/config.toml.
+
+// 1. An "Admin" button next to "Readme" in the header, for admins only. The server decides who is
+// an admin (GET /admin/me); the button is only a shortcut, /admin checks again itself.
 (function () {
   var BUTTON_ID = "admin-button";
   var CLASSES = "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium " +
@@ -43,4 +44,28 @@
     var header = document.getElementById("header");
     if (header !== lastHeader) { lastHeader = header; check(); }
   }, 2000);
+})();
+
+// 2. The chat settings button (a bare gear icon in the message box) only holds the collections
+// picker (kb_picker.py), and only for people with more than one collection, so give it a label.
+(function () {
+  var LABEL = "Collections";
+  function label() {
+    var button = document.getElementById("chat-settings-open-modal");
+    if (!button || button.dataset.cgptLabelled) return;
+    button.dataset.cgptLabelled = "1";
+    button.title = "Choose which collections to search";
+    button.setAttribute("aria-label", "Choose which collections to search");
+    button.style.width = "auto";
+    button.style.padding = "0 10px 0 6px";
+    button.style.gap = "6px";
+    var text = document.createElement("span");
+    text.textContent = LABEL;
+    text.style.fontSize = "13px";
+    text.style.fontWeight = "500";
+    button.appendChild(text);
+  }
+  // The message box is re-drawn by React, so label the button whenever it (re)appears.
+  new MutationObserver(label).observe(document.documentElement, { childList: true, subtree: true });
+  label();
 })();

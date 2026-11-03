@@ -724,6 +724,10 @@ Full description in `docs/INGEST.md`. What changed for the agent:
   view of the shared index. If they include every collection that has articles, neither half is filtered, so
   today's Sunbeam-only searches are exactly as before. No collection → a notice (`steps.NO_COLLECTIONS`), no agent
   run, and the notice is left out of a reopened chat's history.
+- **Choosing collections per chat.** People with more than one collection get chat settings (`kb_picker.py`): "All
+  my collections" plus a tick box per collection. `app.collections_to_search()` narrows the switched-on collections
+  to the ticked ones before they go into `kb.SEARCH_KBS`, so the search tool, the commands and the prompt line all
+  follow the choice. Chainlit saves chat settings in the thread's metadata, so a reopened chat keeps its choice.
 - **Prompt.** `steps.collections_line()` names the person's collections (name and description) above the tool
   description, except when they search Sunbeam alone; then the prompt is byte-identical to before.
 - **The worker** runs in the web process (`@cl.on_app_startup` → `ingest.jobs.start_worker()`); its LLM calls use

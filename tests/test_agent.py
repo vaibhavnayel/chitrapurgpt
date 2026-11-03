@@ -682,3 +682,124 @@ def test_turn_and_commands_search_the_users_collections(app, monkeypatch, two_kb
                                                step("a", "assistant_message", app.NO_COLLECTIONS_MESSAGE,
                                                     metadata=dict(steps.NO_COLLECTIONS))))
     assert [type(m).__name__ for m in history] == ["HumanMessage"], "the notice isn't an answer"
+
+
+# ---------- choosing collections in a chat (kb_picker.py) ----------
+
+class PickerEmitter(RecordingEmitter):
+    """Records chat settings and toasts too (the base emitter's stubs drop them)."""
+
+    def set_chat_settings(self, settings):
+        self.session.chat_settings = settings
+
+    async def emit(self, event, data):
+        self._rec("emit", event=event, data=data)
+
+    def send_toast(self, message, type="info"):
+        return self.emit("toast", {"message": message, "type": type})
+
+
+def picker_context():
+    events = []
+    ctx = init_http_context()
+    ctx.emitter = PickerEmitter(ctx.session, events)
+    return ctx, events
+
+
+def offered_boxes(events):
+    """{checkbox id: initial} of the last collections picker sent, or None if none was sent."""
+    sent = [e["data"] for e in events if e["kind"] == "emit" and e["event"] == "chat_settings"]
+    return {w["id"]: w["initial"] for w in sent[-1]} if sent else None
+
+
+def toasts(events):
+    return [(e["data"]["message"], e["data"]["type"]) for e in events if e["kind"] == "emit" and e["event"] == "toast"]
+
+
+def test_picker_only_for_people_with_several_collections(app):
+    async def run():
+        _, events = picker_context()
+        await app.on_chat_start()
+        return offered_boxes(events)
+
+    assert asyncio.run(run()) is None, "Sunbeam only: no picker"
+    USER_KBS[:] = [SUNBEAM, KSA]
+    assert asyncio.run(run()) == {"kb_all": True, "kb:sunbeam": True, "kb:ksa": True}, "new chat: everything"
+
+
+def test_picker_narrows_turns_and_commands(app, monkeypatch, two_kbs):
+    seen = []
+
+    async def respond(history, message):
+        seen.append(kb.SEARCH_KBS.get())
+        return history
+
+    monkeypatch.setattr(steps, "respond", respond)
+    USER_KBS[:] = [SUNBEAM, KSA]
+
+    async def run():
+        ctx, events = picker_context()
+        await app.on_chat_start()
+        await send(app, "Rathotsava")                                           # everything
+        await app.on_settings_update({"kb_all": True, "kb:sunbeam": False, "kb:ksa": True})
+        boxes_ksa = offered_boxes(events)
+        await send(app, "Rathotsava")
+        await send(app, "Rathotsava", command="Exact Search")
+        await app.on_settings_update({"kb_all": False, "kb:sunbeam": True, "kb:ksa": False})  # switch to Sunbeam
+        await send(app, "Rathotsava", command="Exact Search")
+        await app.on_settings_update({"kb_all": True, "kb:sunbeam": True, "kb:ksa": False})   # tick All
+        boxes_all = offered_boxes(events)
+        await send(app, "Rathotsava")
+        await app.on_settings_update({"kb_all": False, "kb:sunbeam": True, "kb:ksa": True})   # untick only All
+        boxes_none = offered_boxes(events)
+        await send(app, "Rathotsava")
+        return events, boxes_ksa, boxes_all, boxes_none, dict(ctx.session.chat_settings)
+
+    events, boxes_ksa, boxes_all, boxes_none, saved = asyncio.run(run())
+    assert seen == [(SUNBEAM, KSA), (KSA,), (SUNBEAM, KSA)], "the 'nothing ticked' turn never reached the agent"
+    assert boxes_ksa == {"kb_all": False, "kb:sunbeam": False, "kb:ksa": True}, "All shows that not every box is on"
+    assert boxes_all == {"kb_all": True, "kb:sunbeam": True, "kb:ksa": True}
+    assert boxes_none == {"kb_all": False, "kb:sunbeam": False, "kb:ksa": False}
+    assert saved == boxes_none, "the tidied-up choice is what the chat saves"
+    outputs = assistant_outputs(events)
+    ksa_search, sunbeam_search = outputs[0], outputs[1]
+    assert "KSA-2099-March.txt" in ksa_search
+    assert "Sunbeam" not in ksa_search, "the command searched KSA only"
+    assert "Sunbeam-1976-April.txt" in sunbeam_search and "KSA" not in sunbeam_search
+    assert outputs[-1] == app.NONE_TICKED_MESSAGE
+    assert toasts(events) == [
+        ("Your questions in this chat will search Kanara Saraswat.", "info"),
+        ("Your questions in this chat will search The Chitrapur Sunbeam.", "info"),
+        ("Your questions in this chat will search all your collections.", "info"),
+        ("No collection is ticked. Tick at least one to search.", "warning")]
+    history = steps.history_from_thread(thread(step("u", "user_message", "q"),
+                                               step("a", "assistant_message", app.NONE_TICKED_MESSAGE,
+                                                    metadata=dict(steps.NO_COLLECTIONS))))
+    assert [type(m).__name__ for m in history] == ["HumanMessage"], "the notice isn't an answer"
+
+
+def test_reopened_chat_keeps_its_choice(app, monkeypatch, two_kbs):
+    seen = []
+
+    async def respond(history, message):
+        seen.append(kb.SEARCH_KBS.get())
+        return history
+
+    monkeypatch.setattr(steps, "respond", respond)
+    USER_KBS[:] = [SUNBEAM, KSA]
+
+    async def run(saved):
+        ctx, events = picker_context()
+        ctx.session.chat_settings = dict(saved)  # what Chainlit restores from the thread before on_chat_resume
+        await app.on_chat_resume(thread())
+        await send(app, "Rathotsava")
+        return offered_boxes(events)
+
+    assert asyncio.run(run({"kb_all": False, "kb:sunbeam": False, "kb:ksa": True})) == \
+        {"kb_all": False, "kb:sunbeam": False, "kb:ksa": True}
+    assert asyncio.run(run({})) == {"kb_all": True, "kb:sunbeam": True, "kb:ksa": True}, "a chat from before the picker"
+    assert seen == [(KSA,), (SUNBEAM, KSA)]
+    # Access taken away since: only what they still have is searched, and the picker goes once one is left.
+    USER_KBS[:] = [SUNBEAM]
+    assert asyncio.run(run({"kb_all": False, "kb:sunbeam": False, "kb:ksa": True})) is None
+    assert seen[-1] == (SUNBEAM,)
