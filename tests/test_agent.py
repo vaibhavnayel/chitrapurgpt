@@ -650,7 +650,9 @@ def test_prompt_names_collections_except_for_sunbeam_alone():
     line = steps.collections_line((SUNBEAM, KSA))
     assert line == ("The knowledge base holds articles from these collections: The Chitrapur Sunbeam (the magazine "
                     "of Shri Chitrapur Math); Kanara Saraswat (the magazine of the Kanara Saraswat Association). The "
-                    "source file name of each search result shows which collection it comes from.")
+                    "source file name of each search result shows which collection it comes from.\n"
+                    + steps.LINKED_SOURCES_LINE)
+    assert "[n] <title>, <url>" in steps.LINKED_SOURCES_LINE and "(unlisted)" in steps.LINKED_SOURCES_LINE
     both = steps.system_prompt(now, kbs=(SUNBEAM, KSA))
     assert line in both and both.replace(line + "\n", "") == base
     assert "Kanara Saraswat" in steps.system_prompt(now, mode=steps.QUICK, kbs=(KSA,))

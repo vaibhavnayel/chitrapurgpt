@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS {TABLE} (
     embedding halfvec({DIM}) NOT NULL,
     kb_id     text NOT NULL DEFAULT 'sunbeam',  -- the knowledge base (kb.py)
     seq       bigint,                    -- load order of published articles (the original import: kb_legacy_order)
-    issue_id  bigint                     -- the ingest job that published it (NULL for the original import)
+    issue_id  bigint,                    -- the ingest job that published it (NULL for the original import)
+    source_id bigint                     -- the linked source it comes from (ingest/sources.py), if any
 );
 CREATE INDEX IF NOT EXISTS {INDEX} ON {TABLE} USING hnsw (embedding halfvec_ip_ops)
     WITH (m = 32, ef_construction = 200);

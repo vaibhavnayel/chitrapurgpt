@@ -157,6 +157,8 @@ which takes a few minutes per issue. Nothing is searchable until you review each
         """<div class="banner warn">Uploads need Cloudflare R2: set R2_ACCOUNT_ID (or R2_ENDPOINT), R2_BUCKET,
 R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
 
+    import admin_sources
+    linked = await admin_sources.section(kbs, csrf)
     body = f"""
 <h1>Collections &amp; uploads</h1>
 <h2>Add a magazine issue</h2>
@@ -165,6 +167,7 @@ R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
 <div class="scroll"><table><tr class="head"><th>#</th><th>Issue</th><th>Collection</th><th>Status</th><th>Pages</th>
 <th>Articles</th><th>Contents matched</th><th>Flags</th><th>Cost</th><th>Uploaded</th></tr>
 {''.join(job_row(j) for j in job_list) or '<tr><td colspan="10" class="muted">No uploads yet.</td></tr>'}</table></div>
+{linked}
 <h2>Collections</h2>
 <p>Each collection is a set of articles people can search. Switch collections on or off per person on the
 <a href="/admin">People</a> page; people you haven't switched get the collection's default.</p>
@@ -190,6 +193,7 @@ LIST_REFRESH_JS = """<script>(function(){
   function busy(){
     if (window.cgptUploading) return true;
     var f = document.getElementById('up-file'); if (f && f.files && f.files.length) return true;
+    var y = document.getElementById('yt-file'); if (y && y.files && y.files.length) return true;
     var a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
   }
   setInterval(function(){ if (!busy()) location.reload(); }, 10000);
@@ -463,7 +467,7 @@ async def job_page(request: Request, job_id: int):
     if issue.get("source"):
         pool = await kb.get_pool()
         legacy = await pool.fetchval("SELECT count(*) FROM kb_article WHERE kb_id = $1 AND issue_id IS NULL "
-                                     "AND metadata->>'source' = $2", job["kb_id"], issue["source"])
+                                     "AND source_id IS NULL AND metadata->>'source' = $2", job["kb_id"], issue["source"])
         other = await pool.fetch("SELECT DISTINCT issue_id FROM kb_article WHERE kb_id = $1 AND issue_id <> $2 "
                                  "AND metadata->>'source' = $3", job["kb_id"], job_id, issue["source"])
         if legacy:

@@ -73,8 +73,10 @@ CREATE SEQUENCE IF NOT EXISTS kb_article_seq START 1000000;
 # Columns added to an existing kb_article (vector_store.DDL creates new tables with them). Deliberately no index on
 # kb_id: with one, the planner answers a filtered nearest-neighbour query with an exact scan of the matching rows
 # (sorted by distance) instead of the HNSW index, which is far slower for a large knowledge base.
-ARTICLE_COLUMNS = {"kb_id": "text NOT NULL DEFAULT 'sunbeam'", "seq": "bigint", "issue_id": "bigint"}
-ARTICLE_INDEXES = {"kb_article_issue_id": "CREATE INDEX kb_article_issue_id ON kb_article (issue_id)"}
+ARTICLE_COLUMNS = {"kb_id": "text NOT NULL DEFAULT 'sunbeam'", "seq": "bigint", "issue_id": "bigint",
+                   "source_id": "bigint"}
+ARTICLE_INDEXES = {"kb_article_issue_id": "CREATE INDEX kb_article_issue_id ON kb_article (issue_id)",
+                   "kb_article_source_id": "CREATE INDEX kb_article_source_id ON kb_article (source_id)"}
 
 
 def dsn() -> str | None:
@@ -84,7 +86,7 @@ def dsn() -> str | None:
 # ---------- schema (sync: runs at import time in steps.py, and from tests) ----------
 
 def ensure_schema(db: str | None = None, *, legacy_jsonl: Path | None = LEGACY_JSONL) -> None:
-    from ingest import jobs  # the ingest tables live here too
+    from ingest import jobs, sources  # the ingest and linked-source tables live there
 
     db = db or dsn()
     if not db:
@@ -94,6 +96,7 @@ def ensure_schema(db: str | None = None, *, legacy_jsonl: Path | None = LEGACY_J
             conn.execute("SELECT pg_advisory_xact_lock(%s)", (_SCHEMA_LOCK,))
             conn.execute(SCHEMA)
             conn.execute(jobs.SCHEMA)
+            conn.execute(sources.SCHEMA)
             conn.execute("""INSERT INTO knowledge_base (id, name, description, source_prefix, default_on, created_by)
                             VALUES (%(id)s, %(name)s, %(description)s, %(source_prefix)s, %(default_on)s, 'setup')
                             ON CONFLICT (id) DO NOTHING""", SUNBEAM)
@@ -122,7 +125,7 @@ def _backfill_legacy_order(conn, legacy_jsonl: Path) -> None:
     """Once: the original articles' order, from knowledge_base.jsonl (the file they were loaded from)."""
     if conn.execute("SELECT EXISTS (SELECT 1 FROM kb_legacy_order)").fetchone()[0]:
         return
-    if not conn.execute("SELECT EXISTS (SELECT 1 FROM kb_article WHERE issue_id IS NULL)").fetchone()[0]:
+    if not conn.execute("SELECT EXISTS (SELECT 1 FROM kb_article WHERE issue_id IS NULL AND source_id IS NULL)").fetchone()[0]:
         return
     if not legacy_jsonl.exists():
         logger.warning("%s is missing: the original articles will load in id order", legacy_jsonl)

@@ -395,8 +395,10 @@ def install(app):
     """Add the /admin pages (and admin_kb.py's collections and uploads) to Chainlit's FastAPI app, ahead of
     Chainlit's catch-all UI route."""
     import admin_kb
+    import admin_sources
     before = list(app.router.routes)
     app.include_router(router)
     app.include_router(admin_kb.router)
+    app.include_router(admin_sources.router)
     added = [r for r in app.router.routes if r not in before]
     app.router.routes[:] = added + before

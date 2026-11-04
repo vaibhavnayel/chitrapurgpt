@@ -93,6 +93,29 @@ most 8 page images are in flight.
   it; with "All" ticked it also covers collections switched on since. It never widens access: admins still decide
   who may search what. Nothing ticked → a notice asking them to tick one, no agent run.
 
+## Videos and websites (linked collections: `ingest/sources.py`, `admin_sources.py`)
+
+Some collections aren't made of magazine issues. Their entries come from a **source** (`kb_source`): today the
+YouTube channel's exported lists; a website is next. Each entry is one row in `kb_article` with `source_id` set,
+searched, read and cited like an article. Its metadata carries a `url` (and `privacy` for videos); the agent is
+told to cite such results as `[n] <title>, <url>` and to mark unlisted videos (`steps.LINKED_SOURCES_LINE`, added
+only for people with more than Sunbeam), and Exact/Fuzzy Search link their titles.
+
+- **YouTube** (`ingest/youtube.py`): at `/admin/kb` → *Videos and websites*, the admin picks the collection and
+  both CSV exports (`youtube_master_catalog …csv` and `youtube_playlists_contents …csv`; told apart by their
+  columns). One entry per public or unlisted video (title, date, length, playlists, link, description) and one per
+  public or unlisted playlist (its videos in order, with links). Private and deleted videos and private playlists
+  are left out. The playlist file is the source of playlist membership (the video file's Playlists column can't be
+  split: some names contain commas). Videos only in the playlist file (the video export misses some) are kept with
+  no description.
+- **An update** (`kb_sync`) is worked out when the files are sent and shown first: new, changed, to take out,
+  unchanged, plus notes. *Apply* runs in the background of the web process: only new and changed entries are
+  embedded (an entry's id ends in a hash of its text and metadata), entries missing from the new lists are deleted,
+  all in one transaction, then the in-memory index refreshes. Re-sending the same lists costs nothing. If the app
+  restarts mid-apply nothing is written; the update goes back to *Waiting for you to press Apply*.
+- Cost: the first YouTube load (2,956 entries, 1.9 M characters) is about $0.07 of embeddings and takes a few
+  minutes; later updates cost cents. It adds about 26 MB to the in-memory fuzzy index.
+
 ## Costs and times (eval on 40 born-digital issues, 2021–2026; `.cache/ingest-eval/REPORT.local.md`)
 
 | | Typical issue (60 pages) |
