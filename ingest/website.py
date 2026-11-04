@@ -519,7 +519,8 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
     notes = [f"Read {len(pages):,} pages in {(time.monotonic() - t0) / 60:.0f} minutes: {len(entries):,} entries "
              f"({albums:,} photo albums, {len(entries) - albums:,} pages)."]
     if failed:
-        notes.append("Pages that couldn't be read: " + ", ".join(f"{n:,} ({k})" for k, n in failed.most_common()) + ".")
+        notes.append(f"{sum(failed.values()):,} pages couldn't be read (the site gave an error, or they weren't web "
+                     f"pages): " + ", ".join(f"{n:,} {k}" for k, n in failed.most_common()) + ".")
     if len(seen) >= max_pages:
         notes.append(f"Stopped at the limit of {max_pages:,} pages; some pages may be missing.")
     return entries, notes
