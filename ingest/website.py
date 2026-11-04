@@ -36,7 +36,8 @@ DEFAULT_CONFIG = {
     "skip": ["/assets/", "/vendorAssets/", "/myAssets/", "/documents/", "/booking", "/site/login", "/user/",
              "/shop", "/cart", "/gallery/default/videos", "/gallery/default/clips", "/site/live-stream",
              "/site/radio", "/site/sanskrit-index", "/site/signup", "/site/request-password-reset"],
-    "lists": ["/gallery/default/index", "/gallery"],   # read for their links only (album names), not entries
+    # read for their links only (album names, news stories), not entries
+    "lists": ["/gallery/default/index", "/gallery", "/news/default/index", "/news"],
     "content_start": 'class="breadcrumbs',
     "content_end": 'class="footer-v1',
     "max_pages": 8000,
@@ -72,6 +73,9 @@ class Page:
     captions: list[str] = field(default_factory=list)            # photo captions (albums)
     links: list[str] = field(default_factory=list)               # absolute hrefs, for the crawl
     album_names: dict[str, tuple[str, str]] = field(default_factory=dict)  # album id -> (name, "Oct-2026")
+    h1: str = ""
+    headings: list[str] = field(default_factory=list)
+    html_title: str = ""
 
 
 class _Reader(HTMLParser):
@@ -232,7 +236,8 @@ def read_page(url: str, html: str, config: dict) -> Page:
     page.text = _tidy("".join(reader.out))
     page.media = list(dict.fromkeys((name, _encode(u)) for name, u in reader.media + script_files(url, html)))
     page.captions = reader.captions
-    page.title = page_title(reader.h1, reader.headings, _clean(title.group(1)) if title else "", url)
+    page.h1, page.headings, page.html_title = reader.h1, reader.headings, _clean(title.group(1)) if title else ""
+    page.title = page_title(page.h1, page.headings, page.html_title, url)
     for link in page.links:  # album links carry the album's name and month
         p = urllib.parse.urlsplit(link)
         if p.path == ALBUM_PATH:
@@ -260,13 +265,17 @@ def script_files(base: str, html: str) -> list[tuple[str, str]]:
 
 
 
-def page_title(h1: str, headings: list[str], html_title: str, url: str) -> str:
-    """The section heading, made specific by the page's own first heading where it has one (a news story:
-    "A Magical Evening ... - Prarthanavarga - Reports")."""
+def page_title(h1: str, headings: list[str], html_title: str, url: str, shared: bool = False) -> str:
+    """The page's heading. Where that heading is a section's, shared by several pages (or the page is one of a set,
+    with ?id=...), it's made specific by the page's own first heading: a news story ("A Magical Evening ... -
+    Prarthanavarga - Reports"), a profile ("Shirali, Pt. Vishnudass Mangesh - Gauravam"), a list of recordings
+    ("Vedantadindimah - Audio")."""
     h1 = re.sub(r"\(Go back to .*?\)", "", h1).strip()
-    first = headings[0] if headings else ""
-    if "story" in url and first and first.lower() != h1.lower():
-        return f"{first.rstrip(': ')} - {h1}" if h1 else first
+    first = next((h.rstrip(": ") for h in headings if h.strip(": ")), "")
+    specific = shared or bool(urllib.parse.urlsplit(url).query)
+    if (specific and first and h1 and first.lower() != h1.lower() and len(first) <= 120
+            and first.lower() not in h1.lower()):
+        return f"{first} - {h1}"
     return h1 or first or html_title or url
 
 
@@ -308,11 +317,19 @@ def _month(my: str) -> tuple[str | None, str]:
     return d.date().isoformat(), f"{d:%B %Y}"
 
 
+DATE_IN_TEXT = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[ -]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?,?[ -]+(\d{4})\b",
+                          re.I)
+
+
 def album_entry(page: Page, album_id: str, name: str, my: str) -> Entry | None:
     counts = Counter(page.captions)
     if not counts and not name:
         return None
     iso, month = _month(my)
+    if not iso:  # no month in the links to it: the first date in its name or captions
+        m = DATE_IN_TEXT.search(" ".join([name, *page.captions]))
+        if m:
+            iso, month = _month(f"{m.group(2)[:3].title()}-{m.group(3)}")
     title = f"Photo album: {name}" if name else f"Photo album {album_id}"
     lines = [title, f"A photo album on {SITE_NAME}" + (f", {month}" if month else "")
              + f", {len(page.captions)} photo{'s' if len(page.captions) != 1 else ''}.", f"Link: {page.url}", "",
@@ -334,8 +351,7 @@ def page_entries(page: Page) -> list[Entry]:
         media = "\n\nLinks on this page:\n" + "\n".join(f"- {name}: {url}" for name, url in page.media)
     path = urllib.parse.urlsplit(page.url)
     key = "page:" + path.path + (f"?{path.query}" if path.query else "")
-    kind = "audio recordings" if any(MEDIA.search(u) and re.search(r"\.(mp3|m4a|wav|ogg|aac)$", u, re.I)
-                                     for _, u in page.media) else "web page"
+    kind = "audio recordings" if "audio" in path.path.lower() else "web page"
     parts = split_text(body + media, MAX_TOKENS)
     entries = []
     for n, part in enumerate(parts, 1):
@@ -382,6 +398,17 @@ def split_text(text: str, max_tokens: int) -> list[str]:
 
 
 # ---------- the crawl ----------
+
+class _QuietCrawl(logging.Filter):
+    """Keeps httpx's one-line-per-request log for the site out of the app's logs (thousands of lines a week)."""
+
+    def __init__(self, host: str):
+        super().__init__()
+        self.host = host
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno > logging.INFO or self.host not in record.getMessage()
+
 
 async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry], list[str]]:
     """Read the site. Returns its entries and notes for the admin. `fetch(url) -> (status, final url, content type,
@@ -443,6 +470,8 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
                     await progress({"pages_read": done, "pages_found": len(seen),
                                     "minutes": round((time.monotonic() - t0) / 60, 1)})
 
+    quiet = _QuietCrawl(urllib.parse.urlsplit(start).netloc)
+    logging.getLogger("httpx").addFilter(quiet)
     workers = [asyncio.create_task(worker()) for _ in range(int(config["concurrency"]))]
     try:
         await queue.join()
@@ -451,9 +480,15 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
             w.cancel()
         if client is not None:
             await client.aclose()
+        logging.getLogger("httpx").removeFilter(quiet)
+    logger.info("Read %d pages of %s in %.0f s", len(pages), start, time.monotonic() - t0)
 
     entries, keys = [], set()
     albums = 0
+    h1s = Counter(page.h1 for page in pages.values())
+    for url, page in pages.items():  # a heading several pages share is a section's: make each page's title specific
+        if h1s[page.h1] > 1:
+            page.title = page_title(page.h1, page.headings, page.html_title, url, shared=True)
     for url, page in sorted(pages.items()):
         p = urllib.parse.urlsplit(url)
         if is_list(url, config):

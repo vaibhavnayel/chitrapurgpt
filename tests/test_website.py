@@ -121,6 +121,19 @@ def test_links_to_files_are_kept_with_their_names():
     assert "bbser" not in audio.text
 
 
+def test_titles_and_album_dates():
+    t = website.page_title
+    assert t("Gauravam", ["Shirali, Pt. Vishnudass Mangesh", "Profile"], "", f"{SITE}/gauravam?id=12") == \
+        "Shirali, Pt. Vishnudass Mangesh - Gauravam", "one of a set (?id=)"
+    assert t("About Maths", ["Shri Chitrapur Math, Bengaluru"], "", f"{SITE}/site/about-maths") == "About Maths"
+    assert t("Publications", ["The Chitrapur Sunbeam"], "", f"{SITE}/publications/sunbeam", shared=True) == \
+        "The Chitrapur Sunbeam - Publications", "a heading several pages share"
+    page = website.Page(url=f"{SITE}/gallery/default/view-gallery?id=393",
+                        captions=["HH Swamiji's visit to Shri Venkatramana Temple, Mangaluru (24 Sep 2024)"])
+    e = website.album_entry(page, "393", "HH Swamiji", "")
+    assert e.metadata["published_date"] == "2024-09-01" and "September 2024" in e.text
+
+
 def test_canonical_addresses():
     c = lambda u: website.canonical(u, f"{SITE}/")  # noqa: E731
     assert c("http://example-math.net/news?id=7#top") == f"{SITE}/news?id=7"
