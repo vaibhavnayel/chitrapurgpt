@@ -65,7 +65,7 @@ and changed videos are added again, and videos missing from the new lists are ta
 <details><summary>Add a website</summary><div class="card" style="margin-top:8px">
 <form method="post" action="/admin/kb/websites/add" style="margin:0"><input type="hidden" name="csrf" value="{csrf}">
 <p class="muted" style="margin:0 0 8px">ChitrapurGPT reads every page of the site (not the files it links to: PDFs,
-pictures and audio are listed by name with their links), which takes about an hour, then shows what it found before
+pictures and audio are listed by name with their links), which takes about 10 minutes for chitrapurmath.net, then shows what it found before
 anything is added. After that it reads the site again once a week and adds what's new or changed by itself.</p>
 <label>Collection <select name="kb_id" required>{'' if web_kb else '<option value="">Choose…</option>'}{web_options}</select></label><br>
 <label>Address<br><input type="url" name="start" value="https://www.chitrapurmath.net/" required style="width:360px"></label><br>
@@ -192,7 +192,7 @@ can search the new entries as soon as it's done.</p></div>"""
 <h1>{_e(sources.KINDS.get(source['kind'], source['kind']))} → {_e(target['name'])}</h1>
 <p>{_sync_tag(status)} <span class="muted">{'sent' if source['kind'] == 'youtube' else 'started'} by
 {_e(sync['created_by'] or '–')}, {_fmt_time(sync['created_at'])}</span></p>
-{'<p class="muted">Reading the site page by page, a few at a time so it isn&#39;t slowed down. This takes about an hour; you can close this page.</p>' if status == 'crawling' else ''}
+{'<p class="muted">Reading the site page by page, a few at a time so it isn&#39;t slowed down. This takes about 10 minutes for chitrapurmath.net; you can close this page.</p>' if status == 'crawling' else ''}
 {f'<div class="banner warn">{_e(sync["error"])}</div>' if sync.get("error") else ''}
 <div class="cards">{cards}</div>
 {f'<h2>Notes</h2><ul>{notes}</ul>' if notes else ''}
@@ -240,7 +240,7 @@ async def website_add(request: Request):
     sync_id = await sources.start_refresh(source["id"], admin)
     if sync_id is None:
         return _back("/admin/kb", "That website is already being read. It's in the list below.", "bad")
-    return _back(f"/admin/kb/syncs/{sync_id}", "Reading the site. This takes about an hour; you can close this page "
+    return _back(f"/admin/kb/syncs/{sync_id}", "Reading the site. This takes about 10 minutes; you can close this page "
                                                "and come back to it from Collections & uploads.")
 
 

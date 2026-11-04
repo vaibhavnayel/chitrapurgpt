@@ -35,7 +35,7 @@ DEFAULT_CONFIG = {
     # its own entry), the glossary (filled in by JavaScript: the pages are empty).
     "skip": ["/assets/", "/vendorAssets/", "/myAssets/", "/documents/", "/booking", "/site/login", "/user/",
              "/shop", "/cart", "/gallery/default/videos", "/gallery/default/clips", "/site/live-stream",
-             "/site/radio", "/site/sanskrit-index", "/site/signup", "/site/request-password-reset"],
+             "/site/radio", "/site/sanskrit-index", "/site/signup", "/site/request-password-reset", "/search"],
     # read for their links only (album names, news stories), not entries
     "lists": ["/gallery/default/index", "/gallery", "/news/default/index", "/news"],
     "content_start": 'class="breadcrumbs',
@@ -321,7 +321,9 @@ DATE_IN_TEXT = re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?[ -]+(Jan|Feb|Mar|Apr|May
                           re.I)
 
 
-def album_entry(page: Page, album_id: str, name: str, my: str) -> Entry | None:
+def album_entry(page: Page, album_id: str, name: str, my: str, shared_name: bool = False) -> Entry | None:
+    """One entry for a photo album. `shared_name`: other albums have the same name ("HH Swamiji"), so the title
+    adds the first caption."""
     counts = Counter(page.captions)
     if not counts and not name:
         return None
@@ -330,7 +332,11 @@ def album_entry(page: Page, album_id: str, name: str, my: str) -> Entry | None:
         m = DATE_IN_TEXT.search(" ".join([name, *page.captions]))
         if m:
             iso, month = _month(f"{m.group(2)[:3].title()}-{m.group(3)}")
-    title = f"Photo album: {name}" if name else f"Photo album {album_id}"
+    first = next(iter(counts), "")
+    if name and shared_name and first and first.lower() != name.lower():
+        title = f"Photo album: {name} - {first}"
+    else:
+        title = f"Photo album: {name or first or album_id}"
     lines = [title, f"A photo album on {SITE_NAME}" + (f", {month}" if month else "")
              + f", {len(page.captions)} photo{'s' if len(page.captions) != 1 else ''}.", f"Link: {page.url}", "",
              "Photo captions:"]
@@ -486,6 +492,7 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
     entries, keys = [], set()
     albums = 0
     h1s = Counter(page.h1 for page in pages.values())
+    album_name_count = Counter(name.lower() for name, _ in album_names.values())
     for url, page in pages.items():  # a heading several pages share is a section's: make each page's title specific
         if h1s[page.h1] > 1:
             page.title = page_title(page.h1, page.headings, page.html_title, url, shared=True)
@@ -496,7 +503,7 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
         if p.path == ALBUM_PATH:
             album_id = (urllib.parse.parse_qs(p.query).get("id") or [""])[0]
             name, my = album_names.get(album_id, ("", ""))
-            e = album_entry(page, album_id, name, my)
+            e = album_entry(page, album_id, name, my, shared_name=album_name_count[name.lower()] > 1)
             new = [e] if e else []
             albums += bool(e)
         else:
