@@ -26,6 +26,13 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 KINDS = {"youtube": "YouTube video lists", "website": "Website"}
+SUMMARY_MODEL = "claude-haiku-5-5"
+SUMMARY_PROMPT = """Summarise this {what} in 1 to 3 sentences, in English. Say what it is and its main points, names and
+dates. Return only the summary.
+
+Title: {title}
+
+{text}"""
 _APPLY_LOCK = 727277  # pg advisory lock: one sync writes at a time (publishing issues uses 727276)
 EMBED_USD_PER_M = 0.13  # text-embedding-3-large
 
@@ -65,11 +72,12 @@ class Entry:
     title: str
     text: str                   # stored, read by the readers, searched
     metadata: dict              # source, published_date, title, url, kind, ...; shown to the agent
-    summary: str = ""           # English summary, embedded instead of the text when the text is mostly Indic
+    summary: str = ""           # English summary (written when applying, for entries mostly in an Indian script)
 
     @property
     def digest(self) -> str:
-        blob = json.dumps([self.text, self.metadata, self.summary], sort_keys=True, ensure_ascii=False)
+        """Of what the source says (not the summary we write), so an unchanged page isn't summarised again."""
+        blob = json.dumps([self.text, self.metadata], sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(blob.encode()).hexdigest()[:12]
 
     def article_id(self, source_id: int) -> str:
@@ -220,7 +228,107 @@ async def mark_interrupted(minutes: int = STUCK_MINUTES) -> int:
         "UPDATE kb_sync SET status = 'checked', error = 'Interrupted (the app restarted). Press Apply again.' "
         "WHERE status = 'applying' AND entries IS NOT NULL AND started_at < now() - make_interval(mins => $1)",
         minutes)
-    return int(status.split()[-1])
+    crawls = await pool.execute(
+        "UPDATE kb_sync SET status = 'failed', finished_at = now(), "
+        "error = 'Interrupted (the app restarted while reading the site). Nothing was changed.' "
+        "WHERE status = 'crawling' AND started_at < now() - make_interval(hours => $1)", CRAWL_STUCK_HOURS)
+    return int(status.split()[-1]) + int(crawls.split()[-1])
+
+
+# ---------- re-reading a website (on request, and weekly) ----------
+
+REFRESH_DAYS = 7          # a website is re-read when its last read started this long ago
+CRAWL_STUCK_HOURS = 3     # a read still "crawling" after this long was cut off by a restart
+_REFRESH_LOCK = 727278
+
+
+def too_many_removed(plan: Plan, current: int) -> bool:
+    """A weekly re-read that would take out this much is held for an admin (the site may have been down)."""
+    return len(plan.removed) > 20 and len(plan.removed) > 0.1 * current
+
+
+def _crawler(kind: str):
+    if kind == "website":
+        from ingest import website
+        return website.crawl
+    raise ValueError(f"{kind} sources aren't re-read automatically")
+
+
+async def start_refresh(source_id: int, by: str, *, auto: bool = False, crawl=None, embed=None,
+                        db: str | None = None, llm=None) -> int | None:
+    """Re-read a website in the background. Its sync is "crawling", then "checked" with what would change. A weekly
+    re-read (`auto`) is applied straight away, unless it would take out a lot (then it waits for an admin). None if
+    the source is already being read or applied."""
+    pool = await _pool()
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("SELECT pg_advisory_xact_lock($1)", _REFRESH_LOCK)
+        if await conn.fetchval("SELECT EXISTS (SELECT 1 FROM kb_sync WHERE source_id = $1 AND status IN "
+                               "('crawling', 'applying'))", source_id):
+            return None
+        sync_id = await conn.fetchval("INSERT INTO kb_sync (source_id, status, created_by, started_at) "
+                                      "VALUES ($1, 'crawling', $2, now()) RETURNING id", source_id, by)
+    logger.info("%s: re-reading source %d (sync %d)", by, source_id, sync_id)
+    task = asyncio.get_running_loop().create_task(
+        _refresh(sync_id, source_id, auto=auto, crawl=crawl, embed=embed, db=db, llm=llm), name=f"kb-crawl-{sync_id}")
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    return sync_id
+
+
+async def _refresh(sync_id: int, source_id: int, *, auto: bool, crawl, embed, db, llm) -> None:
+    pool = await _pool()
+    try:
+        source = await get_source(source_id)
+
+        async def progress(info: dict) -> None:
+            await pool.execute("UPDATE kb_sync SET result = $2 WHERE id = $1 AND status = 'crawling'", sync_id, info)
+
+        entries, notes = await (crawl or _crawler(source["kind"]))(source["config"], progress=progress)
+        current = await current_articles(source_id)
+        plan = make_plan(source_id, entries, current)
+        held = auto and too_many_removed(plan, len(current))
+        if held:
+            notes = notes + [f"Not applied by itself: {len(plan.removed):,} of the {len(current):,} pages now in the "
+                             f"collection weren't found this time (the site may have been down). Press Apply to "
+                             f"take them out anyway, or Discard."]
+        async with pool.acquire() as conn, conn.transaction():
+            await conn.execute("UPDATE kb_sync SET status = 'superseded', entries = NULL WHERE source_id = $1 "
+                               "AND status = 'checked'", source_id)
+            await conn.execute("UPDATE kb_sync SET status = 'checked', entries = $2, plan = $3, notes = $4, "
+                               "result = NULL WHERE id = $1", sync_id, [e.as_dict() for e in entries],
+                               plan.summary(), notes)
+        if not auto or held:
+            return
+        if plan.new or plan.changed or plan.removed:
+            await start_apply(sync_id, "weekly refresh", embed=embed, db=db, llm=llm)
+        else:
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.execute("UPDATE kb_sync SET status = 'done', entries = NULL, result = $2, "
+                                   "finished_at = now() WHERE id = $1", sync_id,
+                                   {"added": 0, "changed": 0, "removed": 0, "unchanged": plan.unchanged,
+                                    "cost_usd": 0})
+                await conn.execute("UPDATE kb_source SET synced_at = now() WHERE id = $1", source_id)
+    except Exception as e:  # noqa: BLE001  (shown on the sync page; the collection is as it was)
+        logger.exception("Re-reading source %d failed", source_id)
+        await pool.execute("UPDATE kb_sync SET status = 'failed', entries = NULL, finished_at = now(), error = $2 "
+                           "WHERE id = $1", sync_id,
+                           f"Couldn't read the site: {e.__class__.__name__}: {str(e)[:300]}. Nothing was changed.")
+
+
+async def refresh_due_sources() -> list[int]:
+    """The weekly re-read: start one for each website whose last read started REFRESH_DAYS ago or more. Run by the
+    live site's ingest worker (ingest/jobs.py), never by PR previews."""
+    pool = await _pool()
+    await mark_interrupted()
+    rows = await pool.fetch("""SELECT s.id FROM kb_source s WHERE s.kind = 'website' AND NOT EXISTS (
+                                   SELECT 1 FROM kb_sync y WHERE y.source_id = s.id
+                                   AND y.created_at > now() - make_interval(days => $1))""", REFRESH_DAYS)
+    started = []
+    for r in rows:
+        sync_id = await start_refresh(r["id"], "weekly refresh", auto=True)
+        if sync_id:
+            started.append(sync_id)
+    return started
 
 
 # ---------- applying ----------
@@ -233,7 +341,37 @@ def _embed(texts: list[str]) -> list[list[float]]:
     return embed(texts)
 
 
-async def start_apply(sync_id: int, by: str, *, embed=None, db: str | None = None) -> bool:
+def needs_summary(e: Entry) -> bool:
+    from ingest.jobs import indic_share
+    return not e.summary and indic_share(e.text) > 0.5
+
+
+async def summarise(entries: list[Entry], llm=None, concurrency: int = 8) -> float:
+    """English summaries for the entries mostly in an Indian script (what gets embedded for them, so English
+    questions find them: ingest.jobs.embedding_text). Returns the cost. A failed summary is left out, not fatal."""
+    todo = [e for e in entries if needs_summary(e)]
+    if not todo:
+        return 0.0
+    from ingest.llm import AnthropicLLM, Spend, gather_limited
+    llm = llm or AnthropicLLM()
+    spend = Spend()
+
+    async def one(e: Entry):
+        prompt = SUMMARY_PROMPT.format(what=e.metadata.get("kind") or "web page", title=e.title, text=e.text[:24000])
+        try:
+            text, usage = await llm.complete(model=SUMMARY_MODEL, thinking=False, max_tokens=600,
+                                             messages=[{"role": "user", "content": prompt}])
+        except Exception:  # noqa: BLE001
+            logger.exception("Couldn't summarise %s", e.key)
+            return
+        spend.add(usage, f"summary {e.key}")
+        e.summary = " ".join(text.split())
+
+    await gather_limited(concurrency, [one(e) for e in todo])
+    return spend.usd
+
+
+async def start_apply(sync_id: int, by: str, *, embed=None, db: str | None = None, llm=None) -> bool:
     """Mark a checked sync as applying and run it in the background. False if it isn't waiting to be applied."""
     pool = await _pool()
     status = await pool.execute("UPDATE kb_sync SET status = 'applying', error = NULL, started_at = now() "
@@ -241,13 +379,14 @@ async def start_apply(sync_id: int, by: str, *, embed=None, db: str | None = Non
     if not status.endswith(" 1"):
         return False
     logger.info("Admin %s applies sync %d", by, sync_id)
-    task = asyncio.get_running_loop().create_task(apply(sync_id, embed=embed, db=db), name=f"kb-sync-{sync_id}")
+    task = asyncio.get_running_loop().create_task(apply(sync_id, embed=embed, db=db, llm=llm),
+                                                  name=f"kb-sync-{sync_id}")
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     return True
 
 
-async def apply(sync_id: int, *, embed=None, db: str | None = None) -> None:
+async def apply(sync_id: int, *, embed=None, db: str | None = None, llm=None) -> None:
     import kb_index
     pool = await _pool()
     row = await pool.fetchrow("SELECT y.source_id, y.entries, s.kb_id FROM kb_sync y JOIN kb_source s "
@@ -257,7 +396,10 @@ async def apply(sync_id: int, *, embed=None, db: str | None = None) -> None:
         entries = [Entry.from_dict(d) for d in row["entries"]]
         source_id, kb_id = row["source_id"], row["kb_id"]
         plan = make_plan(source_id, entries, await current_articles(source_id))
+        summary_usd = await summarise(plan.new + plan.changed, llm)
         result = await asyncio.to_thread(write_plan, db, source_id, kb_id, plan, embed or _embed)
+        result["cost_usd"] = round(result["cost_usd"] + summary_usd, 4)
+        result["summarised"] = sum(1 for e in plan.new + plan.changed if e.summary)
         if plan.new or plan.changed or plan.removed:
             await asyncio.to_thread(kb_index.INDEX.refresh, db)
         result["secs"] = round(time.monotonic() - t, 1)
@@ -290,7 +432,8 @@ def write_plan(db: str | None, source_id: int, kb_id: str, plan: Plan, embed) ->
               for n, (start, end, text) in enumerate(chunking.article_chunks(e.title, e.text))]
     all_texts = texts + [c[4] for c in chunks]
     vectors = embed(all_texts) if all_texts else []
-    rows = [(e.article_id(source_id), e.text, pinecone_style_metadata(e.metadata), v)
+    rows = [(e.article_id(source_id), e.text,
+             pinecone_style_metadata({**e.metadata, **({"summary": e.summary} if e.summary else {})}), v)
             for e, v in zip(todo, vectors[:len(texts)])]
     chunk_rows = [(rows[ei][0], n, start, end, chunking.shorten(v))
                   for (ei, n, start, end, _), v in zip(chunks, vectors[len(texts):])]

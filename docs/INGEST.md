@@ -96,7 +96,7 @@ most 8 page images are in flight.
 ## Videos and websites (linked collections: `ingest/sources.py`, `admin_sources.py`)
 
 Some collections aren't made of magazine issues. Their entries come from a **source** (`kb_source`): today the
-YouTube channel's exported lists; a website is next. Each entry is one row in `kb_article` with `source_id` set,
+YouTube channel's exported lists, and websites. Each entry is one row in `kb_article` with `source_id` set,
 searched, read and cited like an article. Its metadata carries a `url` (and `privacy` for videos); the agent is
 told to cite such results as `[n] <title>, <url>` and to mark unlisted videos (`steps.LINKED_SOURCES_LINE`, added
 only for people with more than Sunbeam), and Exact/Fuzzy Search link their titles.
@@ -112,9 +112,27 @@ only for people with more than Sunbeam), and Exact/Fuzzy Search link their title
   unchanged, plus notes. *Apply* runs in the background of the web process: only new and changed entries are
   embedded (an entry's id ends in a hash of its text and metadata), entries missing from the new lists are deleted,
   all in one transaction, then the in-memory index refreshes. Re-sending the same lists costs nothing. If the app
-  restarts mid-apply nothing is written; the update goes back to *Waiting for you to press Apply*.
+  restarts mid-apply nothing is written; 20 minutes later the update goes back to *Waiting for you to press
+  Apply*.
 - Cost: the first YouTube load (2,956 entries, 1.9 M characters) is about $0.07 of embeddings and takes a few
   minutes; later updates cost cents. It adds about 26 MB to the in-memory fuzzy index.
+- **Websites** (`ingest/website.py`): *Add a website* (collection + address) reads the whole site in the background
+  of the web process (3 pages at a time, 0.3 s pause; files aren't downloaded), then shows the update to apply.
+  The live site's ingest worker re-reads each website a week after its last read (`sources.refresh_due_sources`,
+  checked every 30 minutes; never on PR previews) and applies the result by itself, unless more than 20 pages and
+  10% of the collection would be taken out (the site may have been down): then it waits for an admin. *Read the site
+  again now* does the same on request, but always waits for Apply. A read cut off by a restart is marked failed
+  after 3 hours.
+  - What becomes an entry: each page's content (chitrapurmath.net: between the breadcrumbs bar and the footer;
+    other sites: the whole page) with its title, address and the PDFs, audio and YouTube links on it, by name
+    (`Links on this page:`); a page with under 150 characters and no such links is left out, longer ones than
+    7,000 tokens become parts. Photo albums (`gallery/default/view-gallery?id=N`) are one entry each: the album's
+    name and month (from the links to it) and every caption, with how many photos share it. The album lists, the
+    video gallery, shop, bookings, login, live stream, radio and the glossary (filled in by JavaScript) are skipped:
+    `website.DEFAULT_CONFIG`.
+  - Pages mostly in an Indian script get a 1–3 sentence English summary from Haiku when applied (what's embedded
+    for them, as for magazine articles); unchanged pages aren't summarised again (the id hash leaves the summary
+    out).
 
 ## Costs and times (eval on 40 born-digital issues, 2021–2026; `.cache/ingest-eval/REPORT.local.md`)
 

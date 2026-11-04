@@ -42,6 +42,7 @@ MAX_PAGES = 400
 HEARTBEAT_S = 20
 STALE_S = 180          # a running job whose heartbeat is older than this is claimed again
 POLL_S = 5
+WEBSITE_CHECK_S = 1800  # how often the worker checks whether a website collection is due its weekly re-read
 INDEX_CHECK_S = 60     # how often the worker checks whether the article table changed under the index
 _PUBLISH_LOCK = 727276
 
@@ -336,6 +337,7 @@ class Worker:
         self.name = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         self._stopping = False
         self._last_index_check = 0.0
+        self._last_website_check = 0.0
         self._index_signature = None
 
     # ---- loop ----
@@ -347,6 +349,7 @@ class Worker:
                 job = await self.claim()
                 if job is None:
                     await self._maybe_refresh_index()
+                    await self._maybe_refresh_websites()
                     wake = WAKE.event()
                     with contextlib.suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(wake.wait(), timeout=POLL_S)
@@ -507,6 +510,17 @@ class Worker:
                                job_id, len(rows), self.name)
         logger.info("Job %d published: %d articles in %s (replaced jobs %s)", job_id, len(rows), job["kb_id"],
                     sorted(replaced - {job_id}) or "none")
+
+    async def _maybe_refresh_websites(self) -> None:
+        """Every so often: start the weekly re-read of website collections that are due (ingest/sources.py)."""
+        if time.monotonic() - self._last_website_check < WEBSITE_CHECK_S:
+            return
+        self._last_website_check = time.monotonic()
+        from ingest import sources
+        try:
+            await sources.refresh_due_sources()
+        except Exception:  # noqa: BLE001  (try again next time; issues keep being processed)
+            logger.exception("Couldn't start the weekly website re-read")
 
     async def _maybe_refresh_index(self) -> None:
         """Pick up articles published by another process (or loaded by hand) every minute or so."""

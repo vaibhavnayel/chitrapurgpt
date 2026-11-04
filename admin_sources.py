@@ -21,7 +21,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_CSV_CHARS = 30_000_000
-SYNC_STATUS = {"checked": ("Waiting for you to press Apply", "on"), "applying": ("Updating the collection…", "run"),
+SYNC_STATUS = {"crawling": ("Reading the site…", "run"), "checked": ("Waiting for you to press Apply", "on"),
+               "applying": ("Updating the collection…", "run"),
                "done": ("Done", "yes"), "failed": ("Failed", "bad"), "discarded": ("Discarded", "off")}
 
 
@@ -36,13 +37,19 @@ async def section(kbs: list[dict], csrf: str) -> str:
     rows = []
     for s in srcs:
         last = (await sources.list_syncs(s["id"], 1) or [None])[0]
+        refresh = (f"""<form class="inline" method="post" action="/admin/kb/sources/{s['id']}/refresh">
+<input type="hidden" name="csrf" value="{csrf}"><button>Read the site again now</button></form>"""
+                   if s["kind"] == "website" and not (last and last["status"] in ("crawling", "applying")) else "")
         rows.append(f"""<tr><td><strong>{_e(sources.KINDS.get(s['kind'], s['kind']))}</strong><br>
 <span class="muted">{_e(s['name'])}</span></td><td>{_e(s['kb_name'])}</td><td data-label="Entries">{s['articles']:,}</td>
 <td data-label="Last updated">{_fmt_time(s['synced_at']) if s['synced_at'] else '–'}</td>
-<td>{f'<a href="/admin/kb/syncs/{last["id"]}">{_sync_tag(last["status"])}</a>' if last else '–'}</td></tr>""")
+<td>{f'<a href="/admin/kb/syncs/{last["id"]}">{_sync_tag(last["status"])}</a>' if last else '–'} {refresh}</td></tr>""")
     yt_kb = next((k["id"] for k in kbs if "youtube" in (k["name"] + k["id"]).lower()), None)
     options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == yt_kb else ""}>{_e(k["name"])}</option>'
                       for k in kbs if k["id"] != kb.DEFAULT_KB)
+    web_kb = next((k["id"] for k in kbs if "website" in (k["name"] + k["id"]).lower()), None)
+    web_options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == web_kb else ""}>{_e(k["name"])}</option>'
+                          for k in kbs if k["id"] != kb.DEFAULT_KB)
     return f"""
 <h2>Videos and websites</h2>
 <div class="card"><form id="yt" style="margin:0">
@@ -55,6 +62,14 @@ and changed videos are added again, and videos missing from the new lists are ta
 <button class="primary" style="margin-top:10px">Check the lists</button>
 <p id="yt-status" class="muted" style="margin:8px 0 0"></p></form></div>
 <script>{YOUTUBE_JS.replace("__CSRF__", csrf)}</script>
+<details><summary>Add a website</summary><div class="card" style="margin-top:8px">
+<form method="post" action="/admin/kb/websites/add" style="margin:0"><input type="hidden" name="csrf" value="{csrf}">
+<p class="muted" style="margin:0 0 8px">ChitrapurGPT reads every page of the site (not the files it links to: PDFs,
+pictures and audio are listed by name with their links), which takes about an hour, then shows what it found before
+anything is added. After that it reads the site again once a week and adds what's new or changed by itself.</p>
+<label>Collection <select name="kb_id" required>{'' if web_kb else '<option value="">Choose…</option>'}{web_options}</select></label><br>
+<label>Address<br><input type="url" name="start" value="https://www.chitrapurmath.net/" required style="width:360px"></label><br>
+<button class="primary" style="margin-top:8px">Read the site</button></form></div></details>
 {f'''<div class="scroll"><table><tr class="head"><th>Source</th><th>Collection</th><th>Entries</th><th>Last updated</th>
 <th>Latest update</th></tr>{"".join(rows)}</table></div>''' if rows else ''}"""
 
@@ -142,7 +157,12 @@ async def sync_page(request: Request, sync_id: int):
     def stat(n, label):
         return f'<div class="stat"><div class="n">{n}</div><div class="l">{label}</div></div>'
 
-    if status == "done":
+    if status == "crawling":
+        p = sync["result"] or {}
+        cards = "".join([stat(f"{p.get('pages_read', 0):,}", "pages read so far"),
+                         stat(f"{p.get('pages_found', 0):,}", "pages found"),
+                         stat(f"{p.get('minutes', 0):.0f} min", "so far")])
+    elif status == "done":
         cards = "".join([stat(f"{result.get('added', 0):,}", "added"), stat(f"{result.get('changed', 0):,}", "updated"),
                          stat(f"{result.get('removed', 0):,}", "taken out"),
                          stat(f"{result.get('unchanged', 0):,}", "unchanged"),
@@ -166,10 +186,13 @@ async def sync_page(request: Request, sync_id: int):
 <button>Discard</button></form>
 <p class="muted" style="margin:8px 0 0">Applying takes a minute or two. People who have {_e(target['name'])} switched on
 can search the new entries as soon as it's done.</p></div>"""
-    refresh = '<script>setTimeout(function(){ location.reload(); }, 5000);</script>' if status == "applying" else ""
+    refresh = ('<script>setTimeout(function(){ location.reload(); }, 15000);</script>'
+               if status in ("applying", "crawling") else "")
     body = f"""<p><a href="/admin/kb">← Collections &amp; uploads</a></p>
 <h1>{_e(sources.KINDS.get(source['kind'], source['kind']))} → {_e(target['name'])}</h1>
-<p>{_sync_tag(status)} <span class="muted">sent by {_e(sync['created_by'] or '–')}, {_fmt_time(sync['created_at'])}</span></p>
+<p>{_sync_tag(status)} <span class="muted">{'sent' if source['kind'] == 'youtube' else 'started'} by
+{_e(sync['created_by'] or '–')}, {_fmt_time(sync['created_at'])}</span></p>
+{'<p class="muted">Reading the site page by page, a few at a time so it isn&#39;t slowed down. This takes about an hour; you can close this page.</p>' if status == 'crawling' else ''}
 {f'<div class="banner warn">{_e(sync["error"])}</div>' if sync.get("error") else ''}
 <div class="cards">{cards}</div>
 {f'<h2>Notes</h2><ul>{notes}</ul>' if notes else ''}
@@ -197,6 +220,42 @@ async def sync_apply(request: Request, sync_id: int):
     if await sources.start_apply(sync_id, admin):
         return _back(page, "Updating the collection. This page refreshes by itself.")
     return _back(page, "This update can't be applied (it was already applied, discarded or replaced).", "bad")
+
+
+@router.post("/admin/kb/websites/add")
+async def website_add(request: Request):
+    admin, form, denied = await _checked_form(request)
+    if denied:
+        return denied
+    target = await kb.get_kb(form.get("kb_id", ""))
+    start = (form.get("start") or "").strip()
+    parsed = urllib.parse.urlsplit(start)
+    if target is None or target["id"] == kb.DEFAULT_KB:
+        return _back("/admin/kb", "Please choose the collection for the website.", "bad")
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return _back("/admin/kb", "Please give the website's full address, starting with https://", "bad")
+    start = urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path or "/", "", ""))
+    source = await sources.get_or_create_source(target["id"], "website", parsed.netloc.removeprefix("www."), admin,
+                                                {"start": start})
+    sync_id = await sources.start_refresh(source["id"], admin)
+    if sync_id is None:
+        return _back("/admin/kb", "That website is already being read. It's in the list below.", "bad")
+    return _back(f"/admin/kb/syncs/{sync_id}", "Reading the site. This takes about an hour; you can close this page "
+                                               "and come back to it from Collections & uploads.")
+
+
+@router.post("/admin/kb/sources/{source_id}/refresh")
+async def source_refresh(request: Request, source_id: int):
+    admin, form, denied = await _checked_form(request)
+    if denied:
+        return denied
+    source = await sources.get_source(source_id)
+    if source is None or source["kind"] != "website":
+        return _back("/admin/kb", "Nothing was changed: unknown website.", "bad")
+    sync_id = await sources.start_refresh(source_id, admin)
+    if sync_id is None:
+        return _back("/admin/kb", "That website is already being read or updated.", "bad")
+    return _back(f"/admin/kb/syncs/{sync_id}", "Reading the site again. You can close this page and come back later.")
 
 
 @router.post("/admin/kb/syncs/{sync_id}/discard")
