@@ -86,6 +86,16 @@ async def main():
 
     assert (await status(app))["up_seconds"] == 100 + 50 + 240 + 120
 
+    # Background work the admin started (reading a website, applying an update) keeps the preview awake.
+    working = {"now": True}
+    busy_app = preview_idle.IdleTracker(inner_app, clock=clock, busy=lambda: working["now"])
+    clock.t += 600
+    assert (await status(busy_app))["idle_seconds"] == 0, "busy: not idle"
+    working["now"] = False
+    clock.t += 30
+    assert (await status(busy_app))["idle_seconds"] == 30, "idle counts from when the work ended"
+    assert preview_idle.background_work() is False, "no update running in this process"
+
     # Only installed on previews.
     class FakeApp:
         def __init__(self):

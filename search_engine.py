@@ -122,7 +122,16 @@ def search_knowledge_base(query: str, exact: bool = False, kb_ids: list[str] | N
         # Generate a snippet containing the matched terms
         content_snippet = generate_snippet_with_matches(doc.page_content, all_terms)
         
-        result_string += f"\n{i}. {title} (Source: {source})"
+        url = doc.metadata.get('url')
+        if url:  # a video, playlist or web page (ingest/sources.py)
+            unlisted = ", unlisted" if doc.metadata.get('privacy') == 'unlisted' else ""
+            label = title.replace('[', '(').replace(']', ')')
+            result_string += f"\n{i}. [{label}]({url}) (Source: {source}{unlisted})"
+            # One line, without the links inside it (a playlist lists its videos as "1. <title> <link>" lines,
+            # which would turn into list items and cut-off links)
+            content_snippet = " ".join(re.sub(r"https?://\S+", "", content_snippet).split())
+        else:
+            result_string += f"\n{i}. {title} (Source: {source})"
         result_string += f"\nSnippet: {content_snippet}"
         result_string += "\n\n"
     

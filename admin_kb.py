@@ -107,7 +107,7 @@ async def kb_page(request: Request):
         return denied
     csrf = _csrf_token(admin)
     kbs = await kb.list_kbs(with_counts=True)
-    job_list = await jobs.list_jobs()
+    job_list = await jobs.list_jobs(limit=100000)
     r2 = storage.configured()
 
     def kb_row(k):
@@ -129,18 +129,24 @@ onsubmit="return confirm('Delete this empty collection?')" style="margin-top:8px
 <button class="danger">Delete collection</button></form>'''}
 </details></td></tr>"""
 
+    names = {k["id"]: k["name"] for k in kbs}
+
     def job_row(j):
         flags = len(j.get("flags") or [])
         return (f'<tr><td>#{j["id"]}</td><td><a href="/admin/kb/jobs/{j["id"]}">{_e(_issue_name(j))}</a><br>'
-                f'<span class="muted">{_e(j["filename"])}</span></td><td>{_e(j["kb_id"])}</td>'
+                f'<span class="muted">{_e(j["filename"])}</span></td>'
+                f'<td data-label="Date added">{_fmt_time(j["created_at"])}<br><span class="muted">{_e(j["created_by"])}</span></td>'
+                f'<td>{_e(names.get(j["kb_id"], j["kb_id"]))}</td>'
                 f'<td>{status_label(j)}{"<br><span class=muted>" + _e(j["error"][:160]) + "</span>" if j.get("error") else ""}</td>'
                 f'<td data-label="Pages">{j["pages"] or "–"}</td><td data-label="Articles">{j["articles"] or "–"}</td>'
                 f'<td data-label="Contents">{_contents(j)}</td><td data-label="Flags">{flags if j.get("flags") is not None else "–"}</td>'
-                f'<td data-label="Cost">${j["cost_usd"]:.2f}</td>'
-                f'<td data-label="Uploaded">{_fmt_time(j["created_at"])}<br><span class="muted">{_e(j["created_by"])}</span></td></tr>')
+                f'<td data-label="Cost">${j["cost_usd"]:.2f}</td></tr>')
 
     active = any(j["status"] in ("queued", "running", "publish", "publishing") for j in job_list)
-    options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == kb.DEFAULT_KB else ""}>'
+    view = issue_view(request.query_params, kbs)
+    shown, nav = issue_page(job_list, view, kbs)
+    picked = kb.DEFAULT_KB if view["kb"] == "all" else view["kb"]
+    options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == picked else ""}>'
                       f'{_e(k["name"])}</option>' for k in kbs)
     upload = f"""<div class="card"><form id="upload" style="margin:0">
 <label><strong>Collection</strong> <select id="up-kb">{options}</select></label><br>
@@ -157,14 +163,19 @@ which takes a few minutes per issue. Nothing is searchable until you review each
         """<div class="banner warn">Uploads need Cloudflare R2: set R2_ACCOUNT_ID (or R2_ENDPOINT), R2_BUCKET,
 R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
 
+    import admin_sources
+    linked = await admin_sources.section(kbs, csrf)
     body = f"""
 <h1>Collections &amp; uploads</h1>
 <h2>Add a magazine issue</h2>
 {upload}
-<h2>Uploaded issues</h2>
-<div class="scroll"><table><tr class="head"><th>#</th><th>Issue</th><th>Collection</th><th>Status</th><th>Pages</th>
-<th>Articles</th><th>Contents matched</th><th>Flags</th><th>Cost</th><th>Uploaded</th></tr>
-{''.join(job_row(j) for j in job_list) or '<tr><td colspan="10" class="muted">No uploads yet.</td></tr>'}</table></div>
+<h2 id="issues">Uploaded issues</h2>
+{nav}
+<div class="scroll"><table><tr class="head">{issue_headers(view)}</tr>
+{''.join(job_row(j) for j in shown) or '<tr><td colspan="10" class="muted">No uploads yet.</td></tr>'}</table></div>
+{nav if len(shown) > 10 else ''}
+<script>{FILTER_JS}</script>
+{linked}
 <h2>Collections</h2>
 <p>Each collection is a set of articles people can search. Switch collections on or off per person on the
 <a href="/admin">People</a> page; people you haven't switched get the collection's default.</p>
@@ -184,12 +195,119 @@ R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
     return _page("Collections & uploads", body, email=admin, **_flash(request))
 
 
+# ---------- the uploaded issues list: one collection at a time (the one picked for uploading), sortable ----------
+
+ISSUES_PER_PAGE = 25
+_FAR = "9999-99-99"
+
+
+def _issue_date(j: dict) -> str:
+    """The issue's own date as yyyy-mm-dd (from its dd-mm-yyyy published date), for sorting by issue."""
+    d = str((j.get("issue") or {}).get("published_date") or "")
+    parts = d.split("-")
+    if len(parts) == 3 and len(parts[2]) == 4:
+        return f"{parts[2]}-{parts[1]}-{parts[0]}"
+    return _FAR
+
+
+# column -> (header, sort key, newest/biggest first by default)
+ISSUE_COLUMNS = {
+    "id": ("#", lambda j: j["id"], True),
+    "issue": ("Issue", lambda j: (_issue_date(j), _issue_name(j).lower()), False),
+    "added": ("Date added", lambda j: j["created_at"], True),
+    "collection": ("Collection", lambda j: j["kb_id"], False),
+    "status": ("Status", lambda j: j["status"], False),
+    "pages": ("Pages", lambda j: j["pages"] or 0, True),
+    "articles": ("Articles", lambda j: j["articles"] or 0, True),
+    "contents": ("Contents matched", None, None),
+    "flags": ("Flags", lambda j: len(j.get("flags") or []), True),
+    "cost": ("Cost", lambda j: j["cost_usd"] or 0, True),
+}
+
+
+def issue_view(query, kbs) -> dict:
+    """What the list shows, from the address: ?kb=<collection>|all, sort=<column>, dir=asc|desc, page=N."""
+    ids = {k["id"] for k in kbs}
+    show = query.get("kb") or kb.DEFAULT_KB
+    if show != "all" and show not in ids:
+        show = kb.DEFAULT_KB
+    sort = query.get("sort")
+    if sort not in ISSUE_COLUMNS or ISSUE_COLUMNS[sort][1] is None:
+        sort = "added"
+    direction = query.get("dir")
+    desc = ISSUE_COLUMNS[sort][2] if direction not in ("asc", "desc") else direction == "desc"
+    page = query.get("page") or "1"
+    return {"kb": show, "sort": sort, "desc": desc, "page": max(1, int(page)) if page.isdigit() else 1}
+
+
+def issue_url(view: dict, **changes) -> str:
+    v = {**view, **changes}
+    params = {"kb": v["kb"], "sort": v["sort"], "dir": "desc" if v["desc"] else "asc"}
+    if v.get("page", 1) > 1:
+        params["page"] = v["page"]
+    return "/admin/kb?" + urllib.parse.urlencode(params) + "#issues"
+
+
+def issue_headers(view: dict) -> str:
+    cells = []
+    for col, (label, key, first_desc) in ISSUE_COLUMNS.items():
+        if key is None:
+            cells.append(f"<th>{_e(label)}</th>")
+            continue
+        here = view["sort"] == col
+        arrow = (" ▼" if view["desc"] else " ▲") if here else ""
+        url = issue_url(view, sort=col, desc=(not view["desc"]) if here else first_desc, page=1)
+        cells.append(f'<th><a href="{_e(url)}" title="Sort by {_e(label.lower())}" '
+                     f'style="color:inherit;text-decoration:underline dotted">{_e(label)}{arrow}</a></th>')
+    return "".join(cells)
+
+
+def issue_page(job_list: list[dict], view: dict, kbs) -> tuple[list[dict], str]:
+    """(the uploads to list, the line above the table: what's shown, pages, See all)."""
+    names = {k["id"]: k["name"] for k in kbs}
+    rows = job_list if view["kb"] == "all" else [j for j in job_list if j["kb_id"] == view["kb"]]
+    _, key, _ = ISSUE_COLUMNS[view["sort"]]
+    rows = sorted(rows, key=lambda j: (key(j), j["id"]), reverse=view["desc"])
+    total = len(rows)
+    if view["kb"] == "all":
+        back = issue_url(view, kb=kb.DEFAULT_KB, page=1)
+        return rows, (f'<p class="muted">Showing all {total:,} uploads, from every collection. '
+                      f'<a href="{_e(back)}">Show one collection</a><br>Click a column heading to sort by it.</p>')
+    pages = max(1, -(-total // ISSUES_PER_PAGE))
+    page = min(view["page"], pages)
+    shown = rows[(page - 1) * ISSUES_PER_PAGE:page * ISSUES_PER_PAGE]
+    links = []
+    if page > 1:
+        links.append(f'<a href="{_e(issue_url(view, page=page - 1))}">‹ Previous</a>')
+    if page < pages:
+        links.append(f'<a href="{_e(issue_url(view, page=page + 1))}">Next ›</a>')
+    where = f"page {page} of {pages} · " if pages > 1 else ""
+    see_all = issue_url(view, kb="all", page=1)
+    return shown, (f'<p class="muted">Showing {_e(names.get(view["kb"], view["kb"]))}: {total:,} upload'
+                   f'{"s" if total != 1 else ""} · {where}{" · ".join(links) + " · " if links else ""}'
+                   f'<a href="{_e(see_all)}">See all ({len(job_list):,})</a><br>'
+                   f'Choose another collection above to list its uploads. Click a column heading to sort by it.</p>')
+
+
+# Picking a collection for uploading also lists that collection's uploads (unless files are already chosen:
+# reloading would lose them).
+FILTER_JS = r"""(function(){
+  var sel = document.getElementById('up-kb'); if (!sel) return;
+  sel.addEventListener('change', function(){
+    var f = document.getElementById('up-file'); if (f && f.files && f.files.length) return;
+    var u = new URL(location.href); u.searchParams.set('kb', sel.value); u.searchParams.delete('page');
+    u.hash = 'issues'; location.href = u.toString();
+  });
+})();"""
+
+
 # While a job is processing, the list refreshes itself so its status moves. It must never reload in the middle of
 # an upload (that aborts the PUT to R2) or while someone is typing in a form, so it only reloads when idle.
 LIST_REFRESH_JS = """<script>(function(){
   function busy(){
     if (window.cgptUploading) return true;
     var f = document.getElementById('up-file'); if (f && f.files && f.files.length) return true;
+    var y = document.getElementById('yt-file'); if (y && y.files && y.files.length) return true;
     var a = document.activeElement; return !!(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName));
   }
   setInterval(function(){ if (!busy()) location.reload(); }, 10000);
@@ -463,7 +581,7 @@ async def job_page(request: Request, job_id: int):
     if issue.get("source"):
         pool = await kb.get_pool()
         legacy = await pool.fetchval("SELECT count(*) FROM kb_article WHERE kb_id = $1 AND issue_id IS NULL "
-                                     "AND metadata->>'source' = $2", job["kb_id"], issue["source"])
+                                     "AND source_id IS NULL AND metadata->>'source' = $2", job["kb_id"], issue["source"])
         other = await pool.fetch("SELECT DISTINCT issue_id FROM kb_article WHERE kb_id = $1 AND issue_id <> $2 "
                                  "AND metadata->>'source' = $3", job["kb_id"], job_id, issue["source"])
         if legacy:

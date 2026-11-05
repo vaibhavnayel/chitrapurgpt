@@ -143,7 +143,14 @@ def collections_line(kbs) -> str:
         return ""
     names = "; ".join(f"{k['name']} ({k['description']})" if k.get("description") else k["name"] for k in kbs)
     return (f"The knowledge base holds articles from these collections: {names}. The source file name of each "
-            f"search result shows which collection it comes from.")
+            f"search result shows which collection it comes from.\n{LINKED_SOURCES_LINE}")
+
+
+# Entries from linked sources (ingest/sources.py: YouTube videos and playlists, web pages) carry a url.
+LINKED_SOURCES_LINE = (
+    "Some search results may be YouTube videos or playlists, or web pages, rather than magazine articles: their "
+    "metadata has a url. Cite one as [n] <title>, <url> (with no page numbers), and if its privacy is unlisted add "
+    "\"(unlisted)\" after the url. When your answer points the user to such a video, playlist or page, give its link.")
 
 
 def system_prompt(now: datetime | None = None, mode: str = DETAILED, kbs=None) -> str:

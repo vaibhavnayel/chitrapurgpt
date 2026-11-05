@@ -36,6 +36,11 @@ NO_COLLECTIONS_MESSAGE = ("Sorry, no collection of articles is switched on for y
 async def on_app_startup():
     # Processes uploaded magazine issues in the background (ingest/jobs.py).
     jobs.start_worker()
+    try:  # a video-list update that was being applied when the app last stopped can be applied again
+        from ingest import sources
+        await sources.mark_interrupted()
+    except Exception:  # noqa: BLE001  (the database may be unreachable; the chat must still start)
+        logging.exception("Couldn't check for interrupted collection updates")
 
 
 async def user_collections() -> list[dict]:
