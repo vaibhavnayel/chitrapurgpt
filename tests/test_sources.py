@@ -242,6 +242,14 @@ def test_check_apply_and_update(db):
         assert await sources.discard(third) and not await sources.discard(third)
         assert (await sources.get_sync(third))["status"] == "discarded" and embed.texts == []
 
+        # The files sent are kept with the update (the page shows which lists are in use).
+        videos_rows, playlist_rows, sent = youtube.read_files(sample_files())
+        assert [f["what"] for f in sent] == ["video list", "playlist list"] and sent[0]["rows"] == 4
+        named = await sources.create_check(source["id"], entries, notes, "admin@x", files=sent)
+        assert (await sources.get_sync(named))["files"] == sent
+        assert (await sources.list_syncs(source["id"], 1))[0]["files"] == sent
+        await sources.discard(named)
+
         # A check replaced by a newer one can't be applied.
         a = await sources.create_check(source["id"], entries, notes, "admin@x")
         b = await sources.create_check(source["id"], entries, notes, "admin@x")

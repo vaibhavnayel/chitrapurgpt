@@ -36,20 +36,29 @@ def read_csv(text: str) -> tuple[list[str], list[dict]]:
 
 def sort_files(files: list[tuple[str, str]]) -> tuple[list[dict], list[dict]]:
     """(video rows, playlist rows) from (file name, text) pairs, told apart by their columns."""
+    videos, playlists, _ = read_files(files)
+    return videos, playlists
+
+
+def read_files(files: list[tuple[str, str]]) -> tuple[list[dict], list[dict], list[dict]]:
+    """sort_files, plus what each file was: [{"name", "what", "rows"}] (shown as the lists last sent)."""
     videos = playlists = None
+    sent = []
     for name, text in files:
         columns, rows = read_csv(text)
         if PLAYLIST_COLUMNS <= set(columns):
             playlists = rows
+            sent.append({"name": name, "what": "playlist list", "rows": len(rows)})
         elif VIDEO_COLUMNS <= set(columns):
             videos = rows
+            sent.append({"name": name, "what": "video list", "rows": len(rows)})
         else:
             raise CsvProblem(f"{name} doesn't look like either YouTube list: it has no "
                              f"{'Playlist Name' if 'Playlist Name' not in columns else 'Title'} column.")
     if videos is None or playlists is None:
         missing = "video list (youtube_master_catalog…)" if videos is None else "playlist list (youtube_playlists_contents…)"
         raise CsvProblem(f"Please choose both files. The {missing} is missing.")
-    return videos, playlists
+    return videos, playlists, sorted(sent, key=lambda f: f["what"] != "video list")
 
 
 def video_id(url: str) -> str | None:

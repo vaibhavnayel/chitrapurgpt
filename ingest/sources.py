@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS kb_sync (
     started_at  timestamptz,
     finished_at timestamptz
 );
+ALTER TABLE kb_sync ADD COLUMN IF NOT EXISTS files jsonb;  -- the files an admin sent (YouTube): name, what, rows
 """
 
 
@@ -186,7 +187,8 @@ async def current_articles(source_id: int) -> dict[str, str]:
         "SELECT id, metadata->>'title' AS title FROM kb_article WHERE source_id = $1", source_id)}
 
 
-async def create_check(source_id: int, entries: list[Entry], notes: list[str], created_by: str) -> int:
+async def create_check(source_id: int, entries: list[Entry], notes: list[str], created_by: str,
+                       files: list[dict] | None = None) -> int:
     """A "checked" sync: the new list and what applying it would change. Older checks of the source are dropped."""
     plan = make_plan(source_id, entries, await current_articles(source_id))
     pool = await _pool()
@@ -194,14 +196,14 @@ async def create_check(source_id: int, entries: list[Entry], notes: list[str], c
         await conn.execute("UPDATE kb_sync SET status = 'superseded', entries = NULL WHERE source_id = $1 "
                            "AND status = 'checked'", source_id)
         return await conn.fetchval(
-            """INSERT INTO kb_sync (source_id, status, entries, plan, notes, created_by)
-               VALUES ($1, 'checked', $2, $3, $4, $5) RETURNING id""",
-            source_id, [e.as_dict() for e in entries], plan.summary(), notes, created_by)
+            """INSERT INTO kb_sync (source_id, status, entries, plan, notes, created_by, files)
+               VALUES ($1, 'checked', $2, $3, $4, $5, $6) RETURNING id""",
+            source_id, [e.as_dict() for e in entries], plan.summary(), notes, created_by, files)
 
 
 async def get_sync(sync_id: int) -> dict | None:
     pool = await _pool()
-    row = await pool.fetchrow("""SELECT y.id, y.source_id, y.status, y.plan, y.notes, y.result, y.error, y.cost_usd,
+    row = await pool.fetchrow("""SELECT y.id, y.source_id, y.status, y.plan, y.notes, y.result, y.error, y.cost_usd, y.files,
                                         y.created_by, y.created_at, y.started_at, y.finished_at,
                                         y.entries IS NOT NULL AS has_entries
                                  FROM kb_sync y WHERE y.id = $1""", sync_id)
@@ -211,7 +213,7 @@ async def get_sync(sync_id: int) -> dict | None:
 async def list_syncs(source_id: int, limit: int = 5) -> list[dict]:
     pool = await _pool()
     return [dict(r) for r in await pool.fetch(
-        """SELECT id, status, plan, result, error, created_by, created_at, finished_at FROM kb_sync
+        """SELECT id, status, plan, result, error, created_by, created_at, finished_at, files FROM kb_sync
            WHERE source_id = $1 AND status <> 'superseded' ORDER BY id DESC LIMIT $2""", source_id, limit)]
 
 

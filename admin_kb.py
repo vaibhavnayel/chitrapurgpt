@@ -41,7 +41,10 @@ def _storage() -> storage.Storage | None:
 
 
 def _back(path: str, message: str, kind: str = "ok") -> RedirectResponse:
-    return RedirectResponse(f"{path}?" + urllib.parse.urlencode({"msg": message, "kind": kind}), status_code=303)
+    path, _, anchor = path.partition("#")
+    joiner = "&" if "?" in path else "?"
+    return RedirectResponse(f"{path}{joiner}" + urllib.parse.urlencode({"msg": message, "kind": kind})
+                            + (f"#{anchor}" if anchor else ""), status_code=303)
 
 
 def _flash(request: Request) -> dict:
@@ -145,12 +148,15 @@ onsubmit="return confirm('Delete this empty collection?')" style="margin-top:8px
     active = any(j["status"] in ("queued", "running", "publish", "publishing") for j in job_list)
     view = issue_view(request.query_params, kbs)
     shown, nav = issue_page(job_list, view, kbs)
-    picked = kb.DEFAULT_KB if view["kb"] == "all" else view["kb"]
-    options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == picked else ""}>'
+    target = next(k for k in kbs if k["id"] == view["kb"])
+    import admin_sources
+    linked = (await admin_sources.sources_by_kb()).get(target["id"], [])
+    kind = linked[0]["kind"] if linked else "issues"
+    options = "".join(f'<option value="{_e(k["id"])}"{" selected" if k["id"] == target["id"] else ""}>'
                       f'{_e(k["name"])}</option>' for k in kbs)
     upload = f"""<div class="card"><form id="upload" style="margin:0">
-<label><strong>Collection</strong> <select id="up-kb">{options}</select></label><br>
-<label style="display:block;margin-top:8px"><strong>Magazine issues (PDF)</strong>
+<input type="hidden" id="up-kb" value="{_e(target['id'])}">
+<label style="display:block"><strong>Magazine issues (PDF)</strong>
 <span class="muted">one issue per file; you can choose several files at once</span><br>
 <input id="up-file" type="file" accept="application/pdf,.pdf" multiple required></label>
 <button class="primary" style="margin-top:10px">Upload and process</button>
@@ -163,20 +169,32 @@ which takes a few minutes per issue. Nothing is searchable until you review each
         """<div class="banner warn">Uploads need Cloudflare R2: set R2_ACCOUNT_ID (or R2_ENDPOINT), R2_BUCKET,
 R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY (see docs/INGEST.md).</div>"""
 
-    import admin_sources
-    linked = await admin_sources.section(kbs, csrf)
-    body = f"""
-<h1>Collections &amp; uploads</h1>
-<h2>Add a magazine issue</h2>
+    if kind == "youtube":
+        panel = await admin_sources.youtube_panel(target, linked[0], csrf)
+    elif kind == "website":
+        panel = await admin_sources.website_panel(target, linked[0], csrf)
+    else:
+        empty = not target["articles"] and not any(j["kb_id"] == target["id"] for j in job_list)
+        panel = f"""<h2>Add magazine issues</h2>
 {upload}
-<h2 id="issues">Uploaded issues</h2>
+<h2 id="issues">{'Uploaded issues: all collections' if view['all'] else 'Uploaded issues'}</h2>
 {nav}
 <div class="scroll"><table><tr class="head">{issue_headers(view)}</tr>
-{''.join(job_row(j) for j in shown) or '<tr><td colspan="10" class="muted">No uploads yet.</td></tr>'}</table></div>
+{''.join(job_row(j) for j in shown) or '<tr><td colspan="10" class="muted">No issues uploaded yet.</td></tr>'}</table></div>
 {nav if len(shown) > 10 else ''}
+{admin_sources.start_panel(target, csrf) if empty and target['id'] != kb.DEFAULT_KB else ''}"""
+    what = {"youtube": "videos and playlists from the YouTube channel's lists",
+            "website": f"pages from the website {linked[0]['name'] if linked else ''}",
+            "issues": "magazine issues"}[kind]
+    body = f"""
+<h1>Collections &amp; uploads</h1>
+<div class="card"><label><strong>Collection</strong> <select id="kb-pick">{options}</select></label>
+<span class="muted" style="margin-left:8px">{_e(what)} · {target['articles']:,} searchable entries ·
+{'on' if target['default_on'] else 'off'} for everyone not switched individually</span>
+{f'<br><span class="muted">{_e(target["description"])}</span>' if target['description'] else ''}</div>
 <script>{FILTER_JS}</script>
-{linked}
-<h2>Collections</h2>
+{panel}
+<h2>All collections</h2>
 <p>Each collection is a set of articles people can search. Switch collections on or off per person on the
 <a href="/admin">People</a> page; people you haven't switched get the collection's default.</p>
 <div class="scroll"><table><tr class="head"><th>Collection</th><th>Description</th><th>Default</th><th>Articles</th><th></th></tr>
@@ -226,10 +244,11 @@ ISSUE_COLUMNS = {
 
 
 def issue_view(query, kbs) -> dict:
-    """What the list shows, from the address: ?kb=<collection>|all, sort=<column>, dir=asc|desc, page=N."""
+    """What the page shows, from the address: ?kb=<collection> (the page's collection), issues=all (list every
+    collection's uploads), sort=<column>, dir=asc|desc, page=N."""
     ids = {k["id"] for k in kbs}
     show = query.get("kb") or kb.DEFAULT_KB
-    if show != "all" and show not in ids:
+    if show not in ids:
         show = kb.DEFAULT_KB
     sort = query.get("sort")
     if sort not in ISSUE_COLUMNS or ISSUE_COLUMNS[sort][1] is None:
@@ -237,12 +256,14 @@ def issue_view(query, kbs) -> dict:
     direction = query.get("dir")
     desc = ISSUE_COLUMNS[sort][2] if direction not in ("asc", "desc") else direction == "desc"
     page = query.get("page") or "1"
-    return {"kb": show, "sort": sort, "desc": desc, "page": max(1, int(page)) if page.isdigit() else 1}
+    return {"kb": show, "all": query.get("issues") == "all", "sort": sort, "desc": desc,
+            "page": max(1, int(page)) if page.isdigit() else 1}
 
 
 def issue_url(view: dict, **changes) -> str:
     v = {**view, **changes}
-    params = {"kb": v["kb"], "sort": v["sort"], "dir": "desc" if v["desc"] else "asc"}
+    params = {"kb": v["kb"], **({"issues": "all"} if v.get("all") else {}), "sort": v["sort"],
+              "dir": "desc" if v["desc"] else "asc"}
     if v.get("page", 1) > 1:
         params["page"] = v["page"]
     return "/admin/kb?" + urllib.parse.urlencode(params) + "#issues"
@@ -265,14 +286,15 @@ def issue_headers(view: dict) -> str:
 def issue_page(job_list: list[dict], view: dict, kbs) -> tuple[list[dict], str]:
     """(the uploads to list, the line above the table: what's shown, pages, See all)."""
     names = {k["id"]: k["name"] for k in kbs}
-    rows = job_list if view["kb"] == "all" else [j for j in job_list if j["kb_id"] == view["kb"]]
+    rows = job_list if view["all"] else [j for j in job_list if j["kb_id"] == view["kb"]]
     _, key, _ = ISSUE_COLUMNS[view["sort"]]
     rows = sorted(rows, key=lambda j: (key(j), j["id"]), reverse=view["desc"])
     total = len(rows)
-    if view["kb"] == "all":
-        back = issue_url(view, kb=kb.DEFAULT_KB, page=1)
+    if view["all"]:
+        back = issue_url(view, all=False, page=1)
         return rows, (f'<p class="muted">Showing all {total:,} uploads, from every collection. '
-                      f'<a href="{_e(back)}">Show one collection</a><br>Click a column heading to sort by it.</p>')
+                      f'<a href="{_e(back)}">Show only {_e(names.get(view["kb"], view["kb"]))}</a><br>'
+                      f'Click a column heading to sort by it.</p>')
     pages = max(1, -(-total // ISSUES_PER_PAGE))
     page = min(view["page"], pages)
     shown = rows[(page - 1) * ISSUES_PER_PAGE:page * ISSUES_PER_PAGE]
@@ -282,21 +304,22 @@ def issue_page(job_list: list[dict], view: dict, kbs) -> tuple[list[dict], str]:
     if page < pages:
         links.append(f'<a href="{_e(issue_url(view, page=page + 1))}">Next ›</a>')
     where = f"page {page} of {pages} · " if pages > 1 else ""
-    see_all = issue_url(view, kb="all", page=1)
-    return shown, (f'<p class="muted">Showing {_e(names.get(view["kb"], view["kb"]))}: {total:,} upload'
-                   f'{"s" if total != 1 else ""} · {where}{" · ".join(links) + " · " if links else ""}'
-                   f'<a href="{_e(see_all)}">See all ({len(job_list):,})</a><br>'
-                   f'Choose another collection above to list its uploads. Click a column heading to sort by it.</p>')
+    see_all = issue_url(view, all=True, page=1)
+    return shown, (f'<p class="muted">{total:,} upload{"s" if total != 1 else ""} in '
+                   f'{_e(names.get(view["kb"], view["kb"]))} · {where}{" · ".join(links) + " · " if links else ""}'
+                   f'<a href="{_e(see_all)}">See all collections\' uploads ({len(job_list):,})</a><br>'
+                   f'Click a column heading to sort by it.</p>')
 
 
-# Picking a collection for uploading also lists that collection's uploads (unless files are already chosen:
-# reloading would lose them).
+# The collection picker at the top: the whole page switches to the chosen collection. Files already chosen for an
+# upload would be lost, so it asks first.
 FILTER_JS = r"""(function(){
-  var sel = document.getElementById('up-kb'); if (!sel) return;
+  var sel = document.getElementById('kb-pick'); if (!sel) return;
+  var was = sel.value;
   sel.addEventListener('change', function(){
-    var f = document.getElementById('up-file'); if (f && f.files && f.files.length) return;
-    var u = new URL(location.href); u.searchParams.set('kb', sel.value); u.searchParams.delete('page');
-    u.hash = 'issues'; location.href = u.toString();
+    var chosen = ['up-file', 'yt-file'].some(function(id){ var f = document.getElementById(id); return f && f.files && f.files.length; });
+    if (chosen && !confirm('Switch collection? The files you chose will need choosing again.')) { sel.value = was; return; }
+    location.href = '/admin/kb?kb=' + encodeURIComponent(sel.value);
   });
 })();"""
 
@@ -395,7 +418,8 @@ async def create_kb(request: Request):
                            form.get("source_prefix", "").strip(), form.get("default_on") == "1", admin)
     except ValueError as e:
         return _back("/admin/kb", f"{e} Nothing was added.", "bad")
-    return _back("/admin/kb", f"Added the collection {form.get('name', '').strip()}.")
+    return _back("/admin/kb?" + urllib.parse.urlencode({"kb": form.get("id", "").strip()}),
+                 f"Added the collection {form.get('name', '').strip()}. Fill it below.")
 
 
 @router.post("/admin/kb/{kb_id}/update")
@@ -409,8 +433,8 @@ async def update_kb(request: Request, kb_id: str):
         await kb.update_kb(kb_id, form.get("name", ""), form.get("description", ""), form.get("default_on") == "1",
                            admin)
     except ValueError as e:
-        return _back("/admin/kb", f"{e} Nothing was changed.", "bad")
-    return _back("/admin/kb", "Saved.")
+        return _back("/admin/kb?" + urllib.parse.urlencode({"kb": kb_id}), f"{e} Nothing was changed.", "bad")
+    return _back("/admin/kb?" + urllib.parse.urlencode({"kb": kb_id}), "Saved.")
 
 
 @router.post("/admin/kb/{kb_id}/delete")
@@ -622,7 +646,7 @@ onsubmit="return confirm('{'Remove its articles from search and delete' if publi
         f'<tr><td><a href="/admin/kb/jobs/{job_id}/pages/{p.page}" target="_blank">{p.page}</a></td>'
         f'<td>{_e(p.model or "–")}</td><td>{_e(p.layer_kind)}</td>'
         f'<td>{"–" if p.recall is None else f"{p.recall:.1%}"}</td><td>{_e("; ".join(p.flags))}</td></tr>' for p in pages)
-    body = f"""<p><a href="/admin/kb">← Collections &amp; uploads</a></p>
+    body = f"""<p><a href="/admin/kb?{urllib.parse.urlencode({'kb': job['kb_id']})}#issues">← {_e(target['name'])}</a></p>
 <h1>{_e(issue.get('label') or job['filename'])}</h1>
 <p>{status_label(job)} · {_e(target['name'])} · <span class="muted">upload #{job_id}, {_e(job['filename'])},
 {_fmt_time(job['created_at'])} by {_e(job['created_by'])}{', cited as ' + _e(issue['source']) if issue.get('source') else ''}
@@ -769,11 +793,13 @@ async def delete(request: Request, job_id: int):
     admin, form, denied = await _checked_form(request)
     if denied:
         return denied
+    job = await jobs.get_job(job_id)
     try:
         removed = await jobs.delete_job(job_id, admin, _storage())
     except jobs.JobError as e:
         return _back(f"/admin/kb/jobs/{job_id}", str(e), "bad")
-    return _back("/admin/kb", "Deleted the upload" + (f" and removed its {removed} articles from search." if removed
+    return _back("/admin/kb?" + urllib.parse.urlencode({"kb": job["kb_id"]}) if job else "/admin/kb",
+                 "Deleted the upload" + (f" and removed its {removed} articles from search." if removed
                                                        else "."))
 
 

@@ -7,7 +7,15 @@ searches what), `kb_index.py` (articles in memory), `admin_kb.py` (the admin pag
 
 ## What an admin does
 
-1. **Collections & uploads** (`/admin/kb`): pick a collection (Sunbeam by default) and one or more PDFs (one issue
+**Collections & uploads** (`/admin/kb`) is built around one collection at a time: the **Collection** picker at the
+top (Sunbeam by default, `?kb=<id>` in the address) switches the whole page. A magazine collection shows *Add
+magazine issues* and its *Uploaded issues* (25 a page, newest added first, sortable by clicking a column heading;
+*See all collections' uploads* lists every collection's, `&issues=all`). A YouTube collection shows *The video lists*
+(the files in use, by name), *Send new lists* and *Recent updates*; a website collection shows *The website*, *Extra
+pages* and *Recent updates*. A new, empty collection also offers to be filled from YouTube lists or a website.
+*All collections* (create, rename, default on/off) is at the bottom.
+
+1. Pick a magazine collection and one or more PDFs (one issue
    per file; several files are uploaded one after the other, each becoming its own job), press *Upload and
    process*. The browser checks the file (PDF, ≤ 250 MB), computes its SHA-256 and uploads it straight to Cloudflare
    R2; the app then queues a job. If the same file was uploaded before, the admin is asked to confirm.
@@ -101,7 +109,7 @@ searched, read and cited like an article. Its metadata carries a `url` (and `pri
 told to cite such results as `[n] <title>, <url>` and to mark unlisted videos (`steps.LINKED_SOURCES_LINE`, added
 only for people with more than Sunbeam), and Exact/Fuzzy Search link their titles.
 
-- **YouTube** (`ingest/youtube.py`): at `/admin/kb` → *Videos and websites*, the admin picks the collection and
+- **YouTube** (`ingest/youtube.py`): at `/admin/kb`, with the YouTube collection picked, the admin chooses
   both CSV exports (`youtube_master_catalog …csv` and `youtube_playlists_contents …csv`; told apart by their
   columns). One entry per public or unlisted video (title, date, length, playlists, link, description) and one per
   public or unlisted playlist (its videos in order, with links). Private and deleted videos and private playlists
@@ -116,7 +124,8 @@ only for people with more than Sunbeam), and Exact/Fuzzy Search link their title
   Apply*.
 - Cost: the first YouTube load (2,956 entries, 1.9 M characters) is about $0.07 of embeddings and takes a few
   minutes; later updates cost cents. It adds about 26 MB to the in-memory fuzzy index.
-- **Websites** (`ingest/website.py`): *Add a website* (collection + address) reads the whole site in the background
+- **Websites** (`ingest/website.py`): picking a new, empty collection offers *From a website* (address + extra
+  pages); it reads the whole site in the background
   of the web process (3 pages at a time, 0.3 s pause; files aren't downloaded), then shows the update to apply.
   The live site's ingest worker re-reads each website a week after its last read (`sources.refresh_due_sources`,
   checked every 30 minutes; never on PR previews) and applies the result by itself, unless more than 20 pages and
@@ -126,7 +135,8 @@ only for people with more than Sunbeam), and Exact/Fuzzy Search link their title
   - What becomes an entry: each page's content (chitrapurmath.net: between the breadcrumbs bar and the footer;
     other sites: the whole page) with its title, address and the PDFs, audio and YouTube links on it, by name
     (`Links on this page:`); a page with under 150 characters and no such links is left out, longer ones than
-    7,000 tokens become parts. Photo albums (`gallery/default/view-gallery?id=N`) are one entry each: the album's
+    7,000 tokens are split at their article headings (one entry per article, named as on the site: `<heading> - <page
+    title>`), or into parts if they have none. Photo albums (`gallery/default/view-gallery?id=N`) are one entry each: the album's
     name and month (from the links to it) and every caption, with how many photos share it. The album lists, the
     video gallery, shop, bookings, login, live stream, radio and the glossary (filled in by JavaScript) are skipped:
     `website.DEFAULT_CONFIG`.
