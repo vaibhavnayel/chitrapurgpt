@@ -5,6 +5,9 @@ any normal HTTP request (pages, admin pages, API calls) and every socket.io even
 (a chat message, opening a chat...). Socket.io's own keep-alive pings don't count, so a forgotten
 open tab still goes idle.
 
+Background work the admin started counts too: while a collection update is reading a website or being applied
+(ingest/sources.py), the preview isn't idle, so it isn't switched off in the middle of it.
+
 GET /__preview/idle returns {"idle_seconds": N, "up_seconds": M} and doesn't count as activity.
 """
 import json
@@ -15,10 +18,20 @@ IDLE_PATH = "/__preview/idle"
 SOCKET_PREFIX = "/ws/socket.io"
 
 
+def background_work() -> bool:
+    """True while a collection update runs in this process (reading a website, applying an update)."""
+    try:
+        from ingest import sources
+    except Exception:  # noqa: BLE001
+        return False
+    return any(not t.done() for t in sources._tasks)
+
+
 class IdleTracker:
-    def __init__(self, app, clock=time.monotonic):
+    def __init__(self, app, clock=time.monotonic, busy=background_work):
         self.app = app
         self.clock = clock
+        self.busy = busy
         self.started = self.last_activity = clock()
 
     def touch(self):
@@ -29,6 +42,8 @@ class IdleTracker:
         path = scope.get("path", "")
         if kind == "http":
             if path == IDLE_PATH:
+                if self.busy():
+                    self.touch()
                 now = self.clock()
                 body = json.dumps({"idle_seconds": int(now - self.last_activity),
                                    "up_seconds": int(now - self.started)}).encode()
