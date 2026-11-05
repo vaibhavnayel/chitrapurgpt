@@ -185,8 +185,12 @@ class _Reader(HTMLParser):
 
 
 def _encode(url: str) -> str:
-    """A link that survives being written in an answer (file names here have spaces and brackets)."""
+    """A link that survives being written in an answer (file names here have spaces and brackets). A YouTube
+    player link (youtube.com/embed/ID?autoplay=1) becomes the video's own page."""
     p = urllib.parse.urlsplit(url)
+    m = re.match(r"/embed/([\w-]{6,})", p.path)
+    if p.netloc.endswith("youtube.com") and m:
+        return f"https://www.youtube.com/watch?v={m.group(1)}"
     return urllib.parse.urlunsplit((p.scheme, p.netloc, urllib.parse.quote(urllib.parse.unquote(p.path), safe="/@:+,;=~!$&*-._"),
                                     p.query, ""))
 

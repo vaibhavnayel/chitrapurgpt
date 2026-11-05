@@ -195,6 +195,8 @@ def test_extra_pages_are_read_even_though_no_menu_links_to_them():
                                      "https://other.org/page", f"{SITE}/booking/form"], f"{SITE}/")
     assert good == [f"{SITE}/site/jgp-resource", f"{SITE}/site/x"]
     assert bad == ["https://other.org/page", f"{SITE}/booking/form"]
+    assert website._encode("https://www.youtube.com/embed/8a6W7Rh_xG4?autoplay=1") == \
+        "https://www.youtube.com/watch?v=8a6W7Rh_xG4", "player links become the video's page"
 
 
 # ---------- the weekly re-read ----------

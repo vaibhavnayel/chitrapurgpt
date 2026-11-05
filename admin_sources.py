@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 MAX_CSV_CHARS = 30_000_000
+# chitrapurmath.net pages that nothing on the site links to (Shantish): the Jai Guru Parijnan resource page
+DEFAULT_EXTRA = "https://www.chitrapurmath.net/site/resource-two"
 SYNC_STATUS = {"crawling": ("Reading the site…", "run"), "checked": ("Waiting for you to press Apply", "on"),
                "applying": ("Updating the collection…", "run"),
                "done": ("Done", "yes"), "failed": ("Failed", "bad"), "discarded": ("Discarded", "off")}
@@ -78,6 +80,8 @@ pictures and audio are listed by name with their links), which takes about 10 mi
 anything is added. After that it reads the site again once a week and adds what's new or changed by itself.</p>
 <label>Collection <select name="kb_id" required>{'' if web_kb else '<option value="">Choose…</option>'}{web_options}</select></label><br>
 <label>Address<br><input type="url" name="start" value="https://www.chitrapurmath.net/" required style="width:360px"></label><br>
+<label>Extra pages <span class="muted">(pages no menu links to, such as resource pages shared by link; one address
+per line)</span><br><textarea name="extra" rows="3" style="width:100%;max-width:520px">{_e(DEFAULT_EXTRA)}</textarea></label><br>
 <button class="primary" style="margin-top:8px">Read the site</button></form></div></details>
 {f'''<div class="scroll"><table><tr class="head"><th>Source</th><th>Collection</th><th>Entries</th><th>Last updated</th>
 <th>Latest update</th></tr>{"".join(rows)}</table></div>''' if rows else ''}"""
@@ -244,8 +248,13 @@ async def website_add(request: Request):
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return _back("/admin/kb", "Please give the website's full address, starting with https://", "bad")
     start = urllib.parse.urlunsplit(("https", parsed.netloc, parsed.path or "/", "", ""))
+    from ingest import website
+    extra, bad = website.check_extra((form.get("extra") or "").splitlines(), start)
+    if bad:
+        return _back("/admin/kb", "Nothing was started. These extra pages aren't on " + parsed.netloc + ": "
+                     + "; ".join(bad[:5]), "bad")
     source = await sources.get_or_create_source(target["id"], "website", parsed.netloc.removeprefix("www."), admin,
-                                                {"start": start})
+                                                {"start": start, "extra": extra})
     sync_id = await sources.start_refresh(source["id"], admin)
     if sync_id is None:
         return _back("/admin/kb", "That website is already being read. It's in the list below.", "bad")
