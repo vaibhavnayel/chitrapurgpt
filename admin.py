@@ -113,8 +113,16 @@ main.wide{max-width:1500px}
 .tag.off{background:#f6f6f6;color:#888;border:1px solid #ddd}
 .tag.run{background:#fff4e0;color:#8a5a00}
 .tag.bad{background:#fdecea;color:#a12622}
-form.kb-toggle{display:inline;margin:0 4px 0 0}
-form.kb-toggle button{font-size:14px;padding:1px 8px;border-radius:10px}
+form.kb-toggle{display:inline;margin:0}
+form.kb-toggle button{font-size:14px;padding:2px 10px;border-radius:10px;white-space:nowrap}
+th.kb-cell,td.kb-cell{text-align:center}
+th.kb-cell{white-space:normal;min-width:84px;line-height:1.25}
+table.people th{position:sticky;top:0;z-index:1}  /* the collection names stay in view in a long list */
+.saved{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#1e6b32;color:#fff;padding:10px 18px;
+  border-radius:8px;font-size:16px;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw}
+.saved.show{opacity:1}
+.saved.bad{background:#a12622}
+@media (max-width:640px){th.kb-cell,td.kb-cell{text-align:left}}
 .cards{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 16px}
 .stat{background:#fff;border:1px solid #dfe3e8;border-radius:8px;padding:10px 14px;min-width:120px}
 .stat .n{font-size:22px;font-weight:600}
@@ -186,6 +194,50 @@ async def _form(request: Request) -> dict[str, str]:
     return {k: v[0] for k, v in urllib.parse.parse_qs(body, keep_blank_values=True).items()}
 
 
+def person_anchor(email: str) -> str:
+    """The id of a person's row on /admin (a switch without JavaScript comes back to it, not to the top)."""
+    return "p-" + hashlib.sha1(email.encode()).hexdigest()[:10]
+
+
+def access_button(k: dict, on: bool, own: bool) -> str:
+    why = "set for this person" if own else "the collection's default"
+    state = "on" if on else "off"
+    return (f'<button class="tag {state}" data-kb="{_e(k["id"])}" data-on="{1 if on else 0}" '
+            f'title="{_e(k["name"])}: {state} ({why}). Click to turn it {"off" if on else "on"}.">'
+            f'{"✓ On" if on else "✗ Off"}</button>')
+
+
+# The collection switches on /admin: saved without reloading, so the page stays where it is. If anything goes
+# wrong (e.g. the form expired), the form is sent the ordinary way instead.
+ACCESS_JS = r"""(function(){
+  var saved = document.getElementById('saved'), timer = null;
+  function say(text, bad){
+    saved.textContent = text; saved.className = 'saved show' + (bad ? ' bad' : '');
+    clearTimeout(timer); timer = setTimeout(function(){ saved.className = 'saved'; }, 3500);
+  }
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f.classList || !f.classList.contains('kb-toggle') || !window.fetch) return;
+    e.preventDefault();
+    var b = f.querySelector('button');
+    b.disabled = true;
+    fetch(f.action, {method: 'POST', body: new URLSearchParams(new FormData(f)), credentials: 'same-origin',
+                     headers: {'X-Requested-With': 'fetch'}})
+      .then(function(r){
+        if (!r.ok || (r.headers.get('content-type') || '').indexOf('json') < 0) throw new Error('not saved');
+        return r.json();
+      })
+      .then(function(d){
+        var tmp = document.createElement('div'); tmp.innerHTML = d.button;
+        b.replaceWith(tmp.firstChild);
+        f.querySelector('[name=enabled]').value = d.on ? '0' : '1';
+        say(d.message);
+      })
+      .catch(function(){ b.disabled = false; f.submit(); });
+  });
+})();"""
+
+
 def _back_to_dashboard(message: str, kind: str = "ok") -> RedirectResponse:
     return RedirectResponse("/admin?" + urllib.parse.urlencode({"msg": message, "kind": kind}), status_code=303)
 
@@ -234,19 +286,15 @@ async def dashboard(request: Request):
         kbs, own_settings = None, {}
 
     def collections(p):
+        """One cell per collection: a switch that turns it on or off for this person, in place (ACCESS_JS)."""
         if kbs is None:
-            return '<span class="muted">unavailable</span>'
+            return '<td data-label="Collections"><span class="muted">unavailable</span></td>'
         own = own_settings.get(p, {})
         on = {k["id"] for k in kb.resolve(kbs, own)}
-        out = []
-        for k in kbs:
-            state = "on" if k["id"] in on else "off"
-            why = "set for this person" if k["id"] in own else "the collection's default"
-            out.append(f"""<form class="kb-toggle" method="post" action="/admin/kb/access">
+        return "".join(f"""<td data-label="{_e(k['name'])}" class="kb-cell"><form class="kb-toggle" method="post" action="/admin/kb/access">
 <input type="hidden" name="csrf" value="{csrf}"><input type="hidden" name="email" value="{_e(p)}">
-<input type="hidden" name="kb_id" value="{_e(k['id'])}"><input type="hidden" name="enabled" value="{0 if state == 'on' else 1}">
-<button class="tag {state}" title="{_e(k['name'])}: {state} ({why}). Click to turn it {'off' if state == 'on' else 'on'}.">{_e(k['source_prefix'])} {'✓' if state == 'on' else '✗'}</button></form>""")
-        return "".join(out)
+<input type="hidden" name="kb_id" value="{_e(k['id'])}"><input type="hidden" name="enabled" value="{0 if k['id'] in on else 1}">
+{access_button(k, k['id'] in on, k['id'] in own)}</form></td>""" for k in kbs)
 
     def row(p):
         u = usage.get(p, {"chats": 0, "last_chat": None})
@@ -266,13 +314,15 @@ onsubmit="return confirm('Remove ' + this.dataset.email + '? They will no longer
         chats = (f'<a href="/admin/user?{urllib.parse.urlencode({"email": p})}">{u["chats"]} chat'
                  f'{"" if u["chats"] == 1 else "s"}</a>') if u["chats"] else '<span class="muted">none</span>'
         cls = "" if p in can_sign_in else ' class="off"'
-        return (f'<tr{cls} data-email="{_e(p)}"><td><strong>{_e(p)}</strong></td><td>{status}</td>'
-                f'<td data-label="Collections">{collections(p)}</td>'
+        return (f'<tr{cls} id="{person_anchor(p)}" data-email="{_e(p)}"><td><strong>{_e(p)}</strong></td><td>{status}</td>'
+                f'{collections(p)}'
                 f'<td data-label="Chats">{chats}</td>'
                 f'<td data-label="Last chat">{_fmt_time(u["last_chat"]) or "<span class=muted>–</span>"}</td>'
                 f'<td>{action}</td></tr>')
 
     rows = "".join(row(p) for p in can_sign_in + no_access)
+    kb_heads = "".join(f'<th class="kb-cell">{_e(k["name"])}</th>' for k in kbs) if kbs is not None else "<th>Collections</th>"
+    kb_cols = len(kbs) if kbs is not None else 1
     body = f"""
 <h1>People</h1>
 <p>{_count(len(can_sign_in), "person", "people")} can sign in{_no_access_note(len(no_access))}.
@@ -288,16 +338,19 @@ Click the number of chats to read them.</p>
 <p><input type="search" id="filter" placeholder="Search by email" oninput="
 var q=this.value.toLowerCase();document.querySelectorAll('tr[data-email]').forEach(function(r){{
 r.style.display=r.dataset.email.indexOf(q)<0?'none':''}})"></p>
-<div class="scroll"><table>
-<tr class="head"><th>Email</th><th>Access</th><th>Collections</th><th>Chats</th><th>Last chat</th><th></th></tr>
-{rows or '<tr><td colspan="6" class="muted">Nobody yet.</td></tr>'}
-</table></div>
+<table class="people">
+<tr class="head"><th>Email</th><th>Access</th>{kb_heads}<th>Chats</th><th>Last chat</th><th></th></tr>
+{rows or f'<tr><td colspan="{5 + kb_cols}" class="muted">Nobody yet.</td></tr>'}
+</table>
 <p class="muted">Removing someone only stops them signing in. Their chats stay here.
-Admins are set by the site owner and can always sign in.
-Collections: which magazines each person's questions are answered from (✓ on, ✗ off). Click one to switch it.
-Someone you haven't switched gets each collection's default (<a href="/admin/kb">Collections &amp; uploads</a>).</p>"""
+Admins are set by the site owner and can always sign in.<br>
+Collections: the columns after Access say what each person's questions are answered from (✓ On, ✗ Off).
+Click one to switch it; it's saved straight away. Someone you haven't switched gets each collection's default
+(<a href="/admin/kb">Collections &amp; uploads</a>).</p>
+<div id="saved" class="saved" role="status" aria-live="polite"></div>
+<script>{ACCESS_JS}</script>"""
     return _page("People", body, email=email, flash=request.query_params.get("msg", ""),
-                 flash_kind="bad" if request.query_params.get("kind") == "bad" else "ok")
+                 flash_kind="bad" if request.query_params.get("kind") == "bad" else "ok", wide=True)
 
 
 @router.get("/admin/user")

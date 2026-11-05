@@ -69,3 +69,32 @@
   new MutationObserver(label).observe(document.documentElement, { childList: true, subtree: true });
   label();
 })();
+
+// 3. In the collections picker, keep "All my collections" and the individual boxes in step while the panel is
+// open: ticking or unticking "All" does the same to every collection, and "All" is ticked exactly when every
+// collection is. (kb_picker.update tidies up the same way when the panel is confirmed.)
+(function () {
+  var syncing = false;
+  function isOn(box) { return box.getAttribute("data-state") === "checked"; }
+  function collections() {
+    return Array.prototype.slice.call(document.querySelectorAll('#chat-settings [role="checkbox"][id^="kb:"]'));
+  }
+  document.addEventListener("click", function (e) {
+    if (syncing || !e.target.closest) return;
+    var box = e.target.closest('#chat-settings [role="checkbox"]');
+    if (!box || !(box.id === "kb_all" || box.id.indexOf("kb:") === 0)) return;
+    setTimeout(function () {             // after the clicked box has changed
+      var all = document.getElementById("kb_all");
+      if (!all) return;
+      var items = collections();
+      syncing = true;
+      try {
+        if (box === all) {
+          items.forEach(function (b) { if (isOn(b) !== isOn(all)) b.click(); });
+        } else if (isOn(all) !== items.every(isOn)) {
+          all.click();
+        }
+      } finally { syncing = false; }
+    }, 0);
+  }, true);
+})();

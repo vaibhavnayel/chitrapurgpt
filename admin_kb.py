@@ -21,7 +21,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 import kb
-from admin import _csrf_token, _e, _fmt_time, _form, _page, _require_admin
+from admin import _csrf_token, _e, _fmt_time, _form, _page, _require_admin, access_button, person_anchor
 from ingest import jobs, storage
 from ingest.pdf import PdfFile, is_pdf_header
 
@@ -94,11 +94,18 @@ async def set_access(request: Request):
         return denied
     email, kb_id = (form.get("email") or "").strip().lower(), form.get("kb_id", "")
     target = await kb.get_kb(kb_id)
+    in_place = request.headers.get("x-requested-with") == "fetch"   # the switch on /admin (admin.ACCESS_JS)
     if not email or target is None:
+        if in_place:
+            return JSONResponse({"error": "unknown person or collection"}, status_code=400)
         return _back("/admin", "Nothing was changed: unknown person or collection.", "bad")
     enabled = form.get("enabled") == "1"
     await kb.set_access(email, kb_id, enabled, admin)
-    return _back("/admin", f"{target['name']} is now {'on' if enabled else 'off'} for {email}.")
+    message = f"{target['name']} is now {'on' if enabled else 'off'} for {email}."
+    if in_place:
+        return JSONResponse({"on": enabled, "message": message, "button": access_button(target, enabled, True)},
+                            headers={"Cache-Control": "no-store"})
+    return _back("/admin#" + person_anchor(email), message)
 
 
 # ---------- collections ----------

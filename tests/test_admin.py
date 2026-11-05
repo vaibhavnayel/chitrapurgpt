@@ -200,13 +200,23 @@ async def main():
             return re.search(rf'<tr[^>]*data-email="{re.escape(email)}".*?</tr>', html, re.S).group(0)
 
         r = await admin.get("/admin")
-        assert "Sunbeam ✓" in row_of(r.text, "alice@gmail.com")
+        on, off = 'data-kb="sunbeam" data-on="1"', 'data-kb="sunbeam" data-on="0"'
+        assert on in row_of(r.text, "alice@gmail.com") and "<th class=\"kb-cell\">The Chitrapur Sunbeam</th>" in r.text
         assert (await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="sunbeam", enabled="0")
                 ) == "The Chitrapur Sunbeam is now off for alice@gmail.com."
         assert await kb.enabled_kbs("Alice@gmail.com") == []
         assert [k["id"] for k in await kb.enabled_kbs("carol@gmail.com")] == ["sunbeam"]
         r = await admin.get("/admin")
-        assert "Sunbeam ✗" in row_of(r.text, "alice@gmail.com") and "Sunbeam ✓" in row_of(r.text, "carol@gmail.com")
+        assert off in row_of(r.text, "alice@gmail.com") and on in row_of(r.text, "carol@gmail.com")
+        # The switch on the page saves in place (no reload, so the page doesn't jump to the top).
+        r = await admin.post("/admin/kb/access", data={"csrf": csrf, "email": "alice@gmail.com", "kb_id": "sunbeam",
+                                                       "enabled": "1"}, headers={"X-Requested-With": "fetch"})
+        assert r.status_code == 200 and r.json()["on"] is True and on in r.json()["button"]
+        assert r.json()["message"] == "The Chitrapur Sunbeam is now on for alice@gmail.com."
+        assert [k["id"] for k in await kb.enabled_kbs("alice@gmail.com")] == ["sunbeam"]
+        r = await admin.post("/admin/kb/access", data={"csrf": csrf, "email": "alice@gmail.com", "kb_id": "sunbeam",
+                                                       "enabled": "0"})
+        assert r.headers["location"].endswith("#" + __import__("admin").person_anchor("alice@gmail.com"))
         assert "now on" in await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="sunbeam", enabled="1")
         assert [k["id"] for k in await kb.enabled_kbs("alice@gmail.com")] == ["sunbeam"]
         assert "unknown" in await post("/admin/kb/access", csrf=csrf, email="alice@gmail.com", kb_id="nope", enabled="1")
