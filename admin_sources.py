@@ -40,8 +40,17 @@ async def section(kbs: list[dict], csrf: str) -> str:
         refresh = (f"""<form class="inline" method="post" action="/admin/kb/sources/{s['id']}/refresh">
 <input type="hidden" name="csrf" value="{csrf}"><button>Read the site again now</button></form>"""
                    if s["kind"] == "website" and not (last and last["status"] in ("crawling", "applying")) else "")
+        extra = ""
+        if s["kind"] == "website":
+            pages = (s["config"] or {}).get("extra") or []
+            extra = f"""<details style="margin-top:6px"><summary>Extra pages ({len(pages)})</summary>
+<form method="post" action="/admin/kb/sources/{s['id']}/extra" style="margin-top:6px"><input type="hidden" name="csrf" value="{csrf}">
+<span class="muted">Pages that no menu links to but should be included, such as resource pages shared by link.
+One address per line. They're added the next time the site is read.</span><br>
+<textarea name="extra" rows="4" style="width:100%;max-width:520px">{_e(chr(10).join(pages))}</textarea><br>
+<button class="primary">Save</button></form></details>"""
         rows.append(f"""<tr><td><strong>{_e(sources.KINDS.get(s['kind'], s['kind']))}</strong><br>
-<span class="muted">{_e(s['name'])}</span></td><td>{_e(s['kb_name'])}</td><td data-label="Entries">{s['articles']:,}</td>
+<span class="muted">{_e(s['name'])}</span>{extra}</td><td>{_e(s['kb_name'])}</td><td data-label="Entries">{s['articles']:,}</td>
 <td data-label="Last updated">{_fmt_time(s['synced_at']) if s['synced_at'] else '–'}</td>
 <td>{f'<a href="/admin/kb/syncs/{last["id"]}">{_sync_tag(last["status"])}</a>' if last else '–'} {refresh}</td></tr>""")
     yt_kb = next((k["id"] for k in kbs if "youtube" in (k["name"] + k["id"]).lower()), None)
@@ -242,6 +251,26 @@ async def website_add(request: Request):
         return _back("/admin/kb", "That website is already being read. It's in the list below.", "bad")
     return _back(f"/admin/kb/syncs/{sync_id}", "Reading the site. This takes about 10 minutes; you can close this page "
                                                "and come back to it from Collections & uploads.")
+
+
+@router.post("/admin/kb/sources/{source_id}/extra")
+async def source_extra(request: Request, source_id: int):
+    admin, form, denied = await _checked_form(request)
+    if denied:
+        return denied
+    from ingest import website
+    source = await sources.get_source(source_id)
+    if source is None or source["kind"] != "website":
+        return _back("/admin/kb", "Nothing was changed: unknown website.", "bad")
+    start = (source["config"] or {}).get("start") or website.DEFAULT_CONFIG["start"]
+    good, bad = website.check_extra((form.get("extra") or "").splitlines(), start)
+    if bad:
+        return _back("/admin/kb", "Nothing was saved. These aren't pages of " + source["name"] + ": "
+                     + "; ".join(bad[:5]), "bad")
+    await sources.set_config(source_id, {"extra": good})
+    logger.info("Admin %s set %d extra pages for source %d", admin, len(good), source_id)
+    return _back("/admin/kb", f"Saved {len(good)} extra page{'s' if len(good) != 1 else ''}. They'll be included the "
+                              f"next time the site is read (press \"Read the site again now\" to do it now).")
 
 
 @router.post("/admin/kb/sources/{source_id}/refresh")

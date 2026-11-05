@@ -180,6 +180,25 @@ def test_crawl_makes_entries_for_pages_albums_and_lists():
 
 # ---------- the weekly re-read ----------
 
+def test_extra_pages_are_read_even_though_no_menu_links_to_them():
+    hidden = shell("<h1>Jai Guru Parijnan</h1><p>" + "Resources for the celebration: bhajans and texts. " * 5 + "</p>"
+                   '<a href="/site/jgp-texts">Texts</a>')
+    pages = {**PAGES, f"{SITE}/site/jgp-resource": hidden,
+             f"{SITE}/site/jgp-texts": shell("<h1>JGP texts</h1><p>" + "The texts of the bhajans. " * 10 + "</p>")}
+    fetched = []
+    entries, _ = asyncio.run(website.crawl({**CONFIG, "extra": ["https://example-math.net/site/jgp-resource"]},
+                                           fetch=fake_fetch(pages, fetched)))
+    keys = {e.key for e in entries}
+    assert {"page:/site/jgp-resource", "page:/site/jgp-texts"} <= keys, "the extra page and the pages it links to"
+    assert "page:/site/jgp-resource" not in crawl(pages)[0], "not found without it"
+    good, bad = website.check_extra(["https://www.example-math.net/site/jgp-resource", "", "example-math.net/site/x",
+                                     "https://other.org/page", f"{SITE}/booking/form"], f"{SITE}/")
+    assert good == [f"{SITE}/site/jgp-resource", f"{SITE}/site/x"]
+    assert bad == ["https://other.org/page", f"{SITE}/booking/form"]
+
+
+# ---------- the weekly re-read ----------
+
 @needs_db
 def test_refresh_is_applied_by_itself_unless_too_much_would_go(db, monkeypatch):
     pages = dict(PAGES)

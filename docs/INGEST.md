@@ -130,6 +130,10 @@ only for people with more than Sunbeam), and Exact/Fuzzy Search link their title
     name and month (from the links to it) and every caption, with how many photos share it. The album lists, the
     video gallery, shop, bookings, login, live stream, radio and the glossary (filled in by JavaScript) are skipped:
     `website.DEFAULT_CONFIG`.
+  - Only pages reachable from the site's visible links are read: links inside HTML comments (pages the site has
+    hidden from its menus, e.g. the old Documents page) are not followed, as Shantish wants. Pages no menu links to
+    but that should be in (resource pages shared by link) go in the source's **Extra pages** box on /admin/kb
+    (`config.extra`, one address per line, same site only); the crawl starts from them too.
   - Pages mostly in an Indian script get a 1–3 sentence English summary from Haiku when applied (what's embedded
     for them, as for magazine articles); unchanged pages aren't summarised again (the id hash leaves the summary
     out).

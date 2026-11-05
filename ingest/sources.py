@@ -159,6 +159,11 @@ async def get_or_create_source(kb_id: str, kind: str, name: str, created_by: str
     return dict(row)
 
 
+async def set_config(source_id: int, changes: dict) -> None:
+    pool = await _pool()
+    await pool.execute("UPDATE kb_source SET config = config || $2 WHERE id = $1", source_id, changes)
+
+
 async def get_source(source_id: int) -> dict | None:
     pool = await _pool()
     row = await pool.fetchrow("SELECT * FROM kb_source WHERE id = $1", source_id)

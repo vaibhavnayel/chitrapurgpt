@@ -405,6 +405,22 @@ def split_text(text: str, max_tokens: int) -> list[str]:
 
 # ---------- the crawl ----------
 
+def check_extra(lines: list[str], start: str) -> tuple[list[str], list[str]]:
+    """(addresses to read as well, lines that aren't pages of this site) from what an admin typed."""
+    good, bad = [], []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        url = line if "://" in line else "https://" + line.lstrip("/")
+        c = canonical(url, start)
+        if c is None or skipped(c, DEFAULT_CONFIG):
+            bad.append(line)
+        elif c not in good:
+            good.append(c)
+    return good, bad
+
+
 class _QuietCrawl(logging.Filter):
     """Keeps httpx's one-line-per-request log for the site out of the app's logs (thousands of lines a week)."""
 
@@ -427,6 +443,11 @@ async def crawl(config: dict, *, progress=None, fetch=None) -> tuple[list[Entry]
     texts_seen: dict[str, str] = {}
     queue: asyncio.Queue[str] = asyncio.Queue()
     queue.put_nowait(start)
+    for url in config.get("extra") or []:  # pages no menu links to (resource pages shared by link)
+        c = canonical(url, start)
+        if c and c not in seen:
+            seen.add(c)
+            queue.put_nowait(c)
     t0, done = time.monotonic(), 0
     client = None
     if fetch is None:
