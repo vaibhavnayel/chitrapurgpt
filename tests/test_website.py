@@ -134,6 +134,30 @@ def test_titles_and_album_dates():
     assert e.metadata["published_date"] == "2024-09-01" and "September 2024" in e.text
 
 
+def test_a_long_page_of_articles_is_split_at_their_headings():
+    articles = "".join(f'<div class="panel-heading"><h4 class="panel-title"><a>Article {n}: {name}</a></h4></div>'
+                       f'<div class="panel-body"><p>' + f"{name} sentence number {{i}}. " * 1 + "</p>"
+                       + "".join(f"<p>{name} paragraph {i} with enough words to make the article long. " * 6 + "</p>"
+                                 for i in range(60)) + "</div>"
+                       for n, name in enumerate(["Nag Panchami", "Shravan Somvar", "Adhik Maas"], 1))
+    html = shell(f'<h1>Parichayanam</h1><h4>Lekh</h4>{articles}<h4>A short heading</h4><p>Tiny.</p>'
+                 f'<a href="/documents/x/Nag Panchami.pdf">Nag Panchami</a>')
+    page = website.read_page(f"{SITE}/parichayanam?id=6", html, website.DEFAULT_CONFIG)
+    entries = website.page_entries(page)
+    titles = [e.title for e in entries]
+    assert [t.split(" - ")[0].split(" (part")[0] for t in titles] == \
+        ["Article 1: Nag Panchami", "Article 2: Shravan Somvar", "Article 3: Adhik Maas"], titles
+    assert "Lekh" in entries[0].text and "A short heading" in entries[-1].text, "short sections join a neighbour"
+    assert "Links:\n- Nag Panchami: " in entries[0].text, "a link goes with the article that names it"
+    assert len({e.key for e in entries}) == len(entries) and all("#" in e.key for e in entries)
+    # A new article added at the top doesn't change the others' ids (so they aren't embedded again).
+    html2 = html.replace('<h4>Lekh</h4>', '<h4>Lekh</h4><div class="panel-heading"><h4>Article 0: New</h4></div><p>'
+                         + "New article text. " * 200 + "</p>")
+    again = website.page_entries(website.read_page(f"{SITE}/parichayanam?id=6", html2, website.DEFAULT_CONFIG))
+    old_ids = {e.key: e.digest for e in entries}
+    assert sum(1 for e in again if old_ids.get(e.key) == e.digest) >= 2
+
+
 def test_canonical_addresses():
     c = lambda u: website.canonical(u, f"{SITE}/")  # noqa: E731
     assert c("http://example-math.net/news?id=7#top") == f"{SITE}/news?id=7"

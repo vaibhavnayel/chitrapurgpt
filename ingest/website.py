@@ -49,6 +49,8 @@ FILE_EXT = re.compile(r"\.(jpe?g|png|gif|webp|svg|bmp|tiff?|css|js|ico|pdf|mp3|m
                       r"xlsx?|pptx?|ttf|woff2?|eot|xml|txt|csv)$", re.I)
 MEDIA = re.compile(r"\.(pdf|mp3|m4a|wav|ogg|aac|mp4|docx?|xlsx?|pptx?)$", re.I)
 MIN_CHARS = 150          # a page with less text than this (after its title) is left out
+MIN_ARTICLE_CHARS = 600  # on a long page split at its headings, a shorter section joins the one before it
+SECTION = "\ue000"      # marks a heading's start in the text while reading (a private-use character)
 MAX_TOKENS = 7000        # longer pages become parts (the embeddings model reads up to 8,191 tokens)
 ALBUM_PATH = "/gallery/default/view-gallery"
 USER_AGENT = "Mozilla/5.0 (compatible; ChitrapurGPT/1.0; +https://chitrapurgpt.onrender.com)"
@@ -74,6 +76,7 @@ class Page:
     links: list[str] = field(default_factory=list)               # absolute hrefs, for the crawl
     album_names: dict[str, tuple[str, str]] = field(default_factory=dict)  # album id -> (name, "Oct-2026")
     h1: str = ""
+    sections: list[tuple[str, str]] = field(default_factory=list)  # (heading, text) from where each heading starts
     headings: list[str] = field(default_factory=list)
     html_title: str = ""
 
@@ -123,6 +126,7 @@ class _Reader(HTMLParser):
             self._in["h1"] = []
         if tag in ("h2", "h3", "h4", "h5"):
             self._in["heading"] = []
+            self.out.append(SECTION)  # where an article on a long page starts (page_entries splits there)
         if "caption" in classes:
             self._in["caption"] = []
         if tag == "a" and href:
@@ -237,7 +241,13 @@ def read_page(url: str, html: str, config: dict) -> Page:
     page.links = links.links
     reader = _Reader(url)
     reader.feed(content_region(html, config))
-    page.text = _tidy("".join(reader.out))
+    marked = _tidy("".join(reader.out))
+    page.text = _tidy(marked.replace(SECTION, ""))
+    chunks = marked.split(SECTION)
+    page.sections = [("", chunks[0].strip())] if chunks[0].strip() else []
+    for chunk in chunks[1:]:
+        if chunk.strip():
+            page.sections.append((chunk.strip().split("\n", 1)[0].strip(), chunk.strip()))
     page.media = list(dict.fromkeys((name, _encode(u)) for name, u in reader.media + script_files(url, html)))
     page.captions = reader.captions
     page.h1, page.headings, page.html_title = reader.h1, reader.headings, _clean(title.group(1)) if title else ""
@@ -362,16 +372,62 @@ def page_entries(page: Page) -> list[Entry]:
     path = urllib.parse.urlsplit(page.url)
     key = "page:" + path.path + (f"?{path.query}" if path.query else "")
     kind = "audio recordings" if "audio" in path.path.lower() else "web page"
-    parts = split_text(body + media, MAX_TOKENS)
-    entries = []
-    for n, part in enumerate(parts, 1):
-        title = page.title if len(parts) == 1 else f"{page.title} (part {n} of {len(parts)})"
-        text = f"{title}\nA {kind if kind != 'audio recordings' else 'page of audio recordings'} on {SITE_NAME}: " \
-               f"{page.url}\n\n{part}"
-        entries.append(Entry(key=key if len(parts) == 1 else f"{key}#part{n}", title=title, text=text,
-                             metadata={"source": SITE_NAME, "published_date": None, "title": title,
-                                       "url": page.url, "kind": kind}))
+    what = "page of audio recordings" if kind == "audio recordings" else kind
+
+    def entry(k: str, title: str, part: str) -> Entry:
+        text = f"{title}\nA {what} on {SITE_NAME}: {page.url}\n\n{part}"
+        return Entry(key=k, title=title, text=text, metadata={"source": SITE_NAME, "published_date": None,
+                                                                "title": title, "url": page.url, "kind": kind})
+
+    from ingest.assemble import count_tokens
+    if count_tokens(body + media) <= MAX_TOKENS:
+        return [entry(key, page.title, body + media)]
+    articles = page_articles(page)
+    if len(articles) < 2:  # one long text: parts
+        parts = split_text(body + media, MAX_TOKENS)
+        return [entry(f"{key}#part{n}", f"{page.title} (part {n} of {len(parts)})", part)
+                for n, part in enumerate(parts, 1)]
+    # A long page holding several articles (Parichayanam's, a list of recordings): one entry per article, named by
+    # its heading as the page shows it. Each article keeps the page's links that it names.
+    entries, used, seen = [], set(), Counter()
+    for heading, text in articles:
+        mine = [(n, u) for n, u in page.media if n and n in text]
+        used.update(mine)
+        if mine:
+            text += "\n\nLinks:\n" + "\n".join(f"- {n}: {u}" for n, u in mine)
+        name = heading if heading and heading.lower() not in page.title.lower() else ""
+        title = f"{name} - {page.title}" if name else page.title
+        slug = hashlib.sha1(heading.encode()).hexdigest()[:8] if heading else "intro"
+        seen[slug] += 1
+        slug += f"-{seen[slug]}" if seen[slug] > 1 else ""
+        parts = split_text(text, MAX_TOKENS)
+        for n, part in enumerate(parts, 1):
+            entries.append(entry(f"{key}#{slug}" + (f"-p{n}" if len(parts) > 1 else ""),
+                                 title + (f" (part {n} of {len(parts)})" if len(parts) > 1 else ""), part))
+    rest = [m for m in page.media if m not in used]
+    if rest:
+        for n, part in enumerate(parts := split_text("Links on this page:\n" + "\n".join(
+                f"- {name}: {url}" for name, url in rest), MAX_TOKENS), 1):
+            entries.append(entry(f"{key}#links" + (f"-p{n}" if len(parts) > 1 else ""),
+                                 f"Links - {page.title}" + (f" (part {n} of {len(parts)})" if len(parts) > 1 else ""),
+                                 part))
     return entries
+
+
+def page_articles(page: Page) -> list[tuple[str, str]]:
+    """(heading, text) for each part of the page that starts at a heading; short ones (sub-headings, single
+    recordings) stay with the one before them."""
+    out: list[list[str]] = []
+    for heading, section in page.sections:
+        if out and len(section) - len(heading) < MIN_ARTICLE_CHARS:
+            out[-1][1] += "\n\n" + section
+        else:
+            out.append([heading, section])
+    if len(out) > 1 and len(out[0][1]) < MIN_ARTICLE_CHARS:  # a short start (the page's own heading): onto the next
+        out[1][1] = out[0][1] + "\n\n" + out[1][1]
+        out.pop(0)
+    title = page.title
+    return [(h, t[len(title):].strip() if not h and t.startswith(title) else t) for h, t in out]
 
 
 def split_text(text: str, max_tokens: int) -> list[str]:
