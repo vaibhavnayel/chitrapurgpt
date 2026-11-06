@@ -2,7 +2,10 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_core.retrievers import BaseRetriever
+import bisect
 import json
+import threading
+from array import array
 from pprint import pprint, pformat
 import logging
 import dotenv
@@ -118,18 +121,54 @@ def deduplicate_docs(docs: list[Document]) -> list[Document]:
     logging.info(f"deduplicated {len(docs)} docs to {len(unique_docs)} docs")
     return unique_docs
 
-def fuzzy_cache_entry(doc: Document, kb_id: str = "sunbeam") -> dict:
-    """What FuzzyMatchRetriever pre-computes for one document (the slow part: phonetic codes of every word)."""
-    # Pre-compute lowercase content and tokens
-    content = doc.page_content.lower()
-    content_tokens = set(content.split())
+class Vocabulary:
+    """Every distinct lowercase word in the articles, numbered once. An article keeps its words as a sorted array of
+    these numbers instead of a set of strings of its own: the same words in about a fifth of the memory (the sets
+    were most of the fuzzy index). Words of removed articles stay; that's small."""
 
-    # Pre-compute phonetic codes for content
-    content_phonetic = ' '.join([
-        doublemetaphone(word)[0]
-        for word in content.split()
-        if word
-    ])
+    def __init__(self) -> None:
+        self._ids: dict[str, int] = {}
+        self._lock = threading.Lock()
+
+    def ids(self, words) -> array:
+        """The sorted, distinct numbers of these words (numbering new ones)."""
+        get = self._ids.get
+        with self._lock:
+            out = set()
+            for w in words:
+                i = get(w)
+                if i is None:
+                    i = self._ids[w] = len(self._ids)
+                out.add(i)
+        return array("I", sorted(out))
+
+    def known(self, words) -> list[int]:
+        """The numbers of the words seen so far (a word no article has can't be in any of them)."""
+        get = self._ids.get
+        return [i for i in (get(w) for w in words) if i is not None]
+
+
+VOCABULARY = Vocabulary()
+
+
+def _has(ids: array, i: int) -> bool:
+    j = bisect.bisect_left(ids, i)
+    return j < len(ids) and ids[j] == i
+
+
+def fuzzy_cache_entry(doc: Document, kb_id: str = "sunbeam", vocabulary: Vocabulary = VOCABULARY) -> dict:
+    """What FuzzyMatchRetriever pre-computes for one document (the slow part: phonetic codes of every word).
+
+    Kept small, with exactly the same scores as before (checked by tests/test_fuzzy_index.py): the words as numbers
+    (Vocabulary), each distinct phonetic code once (token_set_ratio only looks at which codes occur), and no
+    lowercase copy of the text (lowered per search instead; that's fast)."""
+    words = doc.page_content.lower().split()
+    content_tokens = vocabulary.ids(words)
+
+    # Phonetic codes for the content: each distinct code once
+    codes = {doublemetaphone(word)[0] for word in words}
+    codes.discard("")
+    content_phonetic = ' '.join(sorted(codes))
 
     # Pre-process metadata
     important_metadata = {
@@ -151,8 +190,7 @@ def fuzzy_cache_entry(doc: Document, kb_id: str = "sunbeam") -> dict:
     return {
         'document': doc,
         'kb_id': kb_id,
-        'content': content,
-        'content_tokens': content_tokens,
+        'content_tokens': content_tokens,       # sorted word numbers (Vocabulary)
         'content_phonetic': content_phonetic,
         'metadata': important_metadata,
         'metadata_phonetic': metadata_phonetic
@@ -186,66 +224,62 @@ class FuzzyMatchRetriever(BaseRetriever):
         """The same retriever limited to some knowledge bases (no re-processing)."""
         return self.model_copy(update={"kb_ids": None if kb_ids is None else frozenset(kb_ids)})
 
+    def scores(self, query: str):
+        """(document entry, match ratio, token overlap, phonetic score) for every document searched."""
+        query = query.lower()
+        query_tokens = set(query.split())
+        query_ids = VOCABULARY.known(query_tokens)
+        query_phonetic = ' '.join([
+            doublemetaphone(word)[0]
+            for word in query.split()
+            if word
+        ])
+        kb_ids = self.kb_ids
+
+        for doc_data in self._doc_cache:
+            if kb_ids is not None and doc_data['kb_id'] not in kb_ids:
+                continue
+            # Token overlap (the query's words found among the article's word numbers)
+            ids = doc_data['content_tokens']
+            token_overlap = sum(1 for i in query_ids if _has(ids, i)) / len(query_tokens) * 100
+
+            # Content matching
+            content_ratio = fuzz.partial_ratio(query, doc_data['document'].page_content.lower())
+            
+            # Phonetic matching (using pre-computed codes)
+            phonetic_score = fuzz.token_set_ratio(query_phonetic, doc_data['content_phonetic'])
+            
+            # Metadata matching
+            metadata_scores = []
+            for value in doc_data['metadata'].values():
+                fuzzy_score = fuzz.ratio(query, value)
+                metadata_scores.append(fuzzy_score)
+            
+            # Phonetic metadata matching
+            for phonetic_value in doc_data['metadata_phonetic'].values():
+                phonetic_meta_score = fuzz.token_set_ratio(query_phonetic, phonetic_value)
+                metadata_scores.append(phonetic_meta_score)
+            
+            metadata_ratio = max(metadata_scores) if metadata_scores else 0
+            
+            # Combined score
+            content_score = (content_ratio + token_overlap + phonetic_score) / 3
+            match_ratio = (
+                self.content_weight * content_score +
+                self.metadata_weight * metadata_ratio
+            )
+            yield doc_data, match_ratio, token_overlap, phonetic_score
+
     def _get_relevant_documents(
         self, query: str, *, run_manager: CallbackManagerForRetrieverRun
     ) -> list[Document]:
         """More efficient implementation using pre-processed data."""
-        query = query.lower()
-        query_tokens = set(query.split())
-        query_phonetic = ' '.join([
-            doublemetaphone(word)[0] 
-            for word in query.split() 
-            if word
-        ])
-        
-        matching_documents = []
-        kb_ids = self.kb_ids
+        matching_documents = [
+            {"document": doc_data['document'], "ratio": ratio, "token_overlap": overlap, "phonetic_score": phonetic}
+            for doc_data, ratio, overlap, phonetic in self.scores(query)
+            if ratio > self.threshold
+        ]
 
-        # Process documents in batches for better performance
-        batch_size = 100
-        for i in range(0, len(self._doc_cache), batch_size):
-            batch = self._doc_cache[i:i + batch_size]
-
-            for doc_data in batch:
-                if kb_ids is not None and doc_data['kb_id'] not in kb_ids:
-                    continue
-                # Token overlap (pre-computed sets)
-                token_overlap = len(query_tokens & doc_data['content_tokens']) / len(query_tokens) * 100
-                
-                # Content matching
-                content_ratio = fuzz.partial_ratio(query, doc_data['content'])
-                
-                # Phonetic matching (using pre-computed codes)
-                phonetic_score = fuzz.token_set_ratio(query_phonetic, doc_data['content_phonetic'])
-                
-                # Metadata matching
-                metadata_scores = []
-                for value in doc_data['metadata'].values():
-                    fuzzy_score = fuzz.ratio(query, value)
-                    metadata_scores.append(fuzzy_score)
-                
-                # Phonetic metadata matching
-                for phonetic_value in doc_data['metadata_phonetic'].values():
-                    phonetic_meta_score = fuzz.token_set_ratio(query_phonetic, phonetic_value)
-                    metadata_scores.append(phonetic_meta_score)
-                
-                metadata_ratio = max(metadata_scores) if metadata_scores else 0
-                
-                # Combined score
-                content_score = (content_ratio + token_overlap + phonetic_score) / 3
-                match_ratio = (
-                    self.content_weight * content_score + 
-                    self.metadata_weight * metadata_ratio
-                )
-                
-                if match_ratio > self.threshold:
-                    matching_documents.append({
-                        "document": doc_data['document'],
-                        "ratio": match_ratio,
-                        "token_overlap": token_overlap,
-                        "phonetic_score": phonetic_score
-                    })
-        
         # Sort only the documents that passed the threshold
         matching_documents.sort(
             key=lambda x: (x["phonetic_score"], x["token_overlap"], x["ratio"]), 
