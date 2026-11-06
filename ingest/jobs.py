@@ -1,7 +1,9 @@
 """Ingest jobs in Postgres, the background worker that runs them, and publishing.
 
 One job per uploaded PDF. The worker is one asyncio task in the web process (Render runs a single instance): it
-claims a job with FOR UPDATE SKIP LOCKED, runs one at a time, and heartbeats while it works. A job left "running"
+claims a job with FOR UPDATE SKIP LOCKED, runs one at a time, and heartbeats while it works. The reading itself
+(download, pages, split, summaries) runs in a short-lived helper process (ingest/isolated.py), so the memory it
+needs is given back when it's done; publishing stays here, because it refreshes this process's search index. A job left "running"
 by a process that died (restart, redeploy) has a stale heartbeat and is claimed again; its page reads are in
 ingest_page, so it resumes where it stopped.
 
@@ -30,6 +32,7 @@ import chunking
 import models
 
 from . import assemble as asm
+from . import isolated
 from .llm import AnthropicLLM, Spend
 from .pages import PageResult, publication_phrase
 from .pdf import PdfFile, page_count
@@ -330,9 +333,13 @@ def _embed(texts: list[str]) -> list[list[float]]:
 
 class Worker:
     def __init__(self, *, storage_factory=Storage, llm=None, embed=_embed, db: str | None = None,
-                 concurrency: int | None = None):
+                 concurrency: int | None = None, isolate: bool | None = None):
         self.storage_factory, self.llm, self.embed = storage_factory, llm, embed
         self.db = db
+        # Read issues in a helper process (ingest/isolated.py), unless fakes were passed in: they can't go there.
+        if isolate is None:
+            isolate = isolated.enabled() and llm is None and storage_factory is Storage and db is None
+        self.isolate = isolate
         self.concurrency = concurrency  # pages read at once (default: pipeline.PAGE_CONCURRENCY)
         self.name = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         self._stopping = False
@@ -344,6 +351,8 @@ class Worker:
 
     async def run(self) -> None:
         logger.info("Ingest worker %s started", self.name)
+        if self.isolate and not await isolated.check():
+            self.isolate = False
         while not self._stopping:
             try:
                 job = await self.claim()
@@ -381,7 +390,7 @@ class Worker:
         return dict(row) if row else None
 
     async def process(self, job: dict) -> None:
-        work = asyncio.create_task(self._publish(job) if job["status"] == "publishing" else self._run(job))
+        work = asyncio.create_task(self._publish(job) if job["status"] == "publishing" else self._read(job))
         beat = asyncio.create_task(self._heartbeat(job["id"], work))
         try:
             await work
@@ -410,6 +419,14 @@ class Worker:
                 return
 
     # ---- reading, splitting, summaries ----
+
+    async def _read(self, job: dict) -> None:
+        if not (self.isolate and isolated.enabled()):
+            return await self._run(job)
+        try:
+            await isolated.run("job", job["id"], self.name, self.concurrency or 0)
+        except isolated.ChildError as e:  # recorded on the job by process(), as if it had failed here
+            raise JobError(e.message if e.job_error else f"{e.kind}: {e.message}") from None
 
     async def _run(self, job: dict) -> None:
         import kb

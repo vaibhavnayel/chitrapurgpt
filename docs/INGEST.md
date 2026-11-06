@@ -175,6 +175,7 @@ invitations and rate tables).
 | `CGPT_INGEST_READER_MODEL` | – | default `claude-haiku-5-5` (must allow thinking to be switched off) |
 | `CGPT_INGEST_MODEL` | – | default `claude-sonnet-5-5` |
 | `INGEST_WORKER` | – | `0` off, `1` on. Default: on, except on PR previews (`IS_PULL_REQUEST=true`), which share the live database |
+| `INGEST_ISOLATE` | – | `1` (default): heavy work runs in helper processes (below); `0`: in the web process, as before |
 
 Without the R2 vars the app works as before and `/admin/kb` explains that uploads need R2 (collections and
 per-person switches still work).
@@ -195,6 +196,16 @@ per-person switches still work).
 PDF"); *Re-run whole job* tries again, *Delete* removes it. A job stuck "running" after a crash resumes by itself
 within 3 minutes. Every API call's cost is added to the job (`cost_usd`).
 
+**Memory: heavy work runs in helper processes** (`ingest/isolated.py`). Reading an issue (download, pages, split,
+summaries), re-reading a website (the crawl and the check) and writing a sync (summaries, embeddings, rows) each
+run in a short-lived `python -m ingest.isolated ...` process that writes to the database itself and exits, so the
+memory it needs is given back. Run in the web process, a 36-page issue used to leave about 0.5 GB behind until the
+next restart; now the web process doesn't grow (measured: a helper peaks at about 0.5 GB for an issue, 0.25 GB of
+it just to start). Publishing and the search-index refresh stay in the web process. Stopping a job stops its
+helper; a helper exits if the web process goes away. When the worker starts it runs a helper once (`ping`); if that
+fails, everything falls back to the web process (logged). The logs show each helper's start, end and peak memory
+(`Helper process <pid> (job) ended ... it used up to <n> MB`).
+
 **Single instance.** Render runs one instance. A second one would also run a worker (safe: jobs are claimed with
 `SKIP LOCKED` and heartbeats), and its in-memory index catches up within a minute of a publish.
 
@@ -205,6 +216,10 @@ set `INGEST_WORKER=1` on it and expect real (live) results.
 
 ## Tests and the eval
 
+- `tests/test_isolated.py` (local Postgres, fakes via `tests/helper_fakes.py`): an issue read in a helper comes back
+  for review as before, a failure there is shown the same way, Stop stops the helper, a website is read and
+  written in helpers, and the fallback when helpers don't start. The other tests run ingest work in the test
+  process (`tests/conftest.py` sets `INGEST_ISOLATE=0`: their fakes can't go into a helper).
 - `tests/test_ingest_pipeline.py` (offline, fake LLM, generated PDFs): page check and Sonnet fallback, contiguous
   ids and the issue map, contents parsing, range expansion and the checker, the repair round, assembly and parts.
 - `tests/test_kb.py` (local pgvector, throwaway database with the 5,924 originals in the old layout): the migration

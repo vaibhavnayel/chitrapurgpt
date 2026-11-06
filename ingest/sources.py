@@ -23,6 +23,8 @@ import logging
 import time
 from dataclasses import dataclass, field
 
+from . import isolated
+
 logger = logging.getLogger(__name__)
 
 KINDS = {"youtube": "YouTube video lists", "website": "Website"}
@@ -282,44 +284,64 @@ async def start_refresh(source_id: int, by: str, *, auto: bool = False, crawl=No
     return sync_id
 
 
+def _failure(e: Exception) -> str:
+    """'<exception class>: <message>' for the sync page, also for a failure in the helper process."""
+    if isinstance(e, isolated.ChildError):
+        return f"{e.kind}: {e.message[:300]}"
+    return f"{e.__class__.__name__}: {str(e)[:300]}"
+
+
 async def _refresh(sync_id: int, source_id: int, *, auto: bool, crawl, embed, db, llm) -> None:
+    """Read the site (in a helper process, unless a crawl function was passed in), then for a weekly re-read apply
+    what changed."""
     pool = await _pool()
     try:
-        source = await get_source(source_id)
-
-        async def progress(info: dict) -> None:
-            await pool.execute("UPDATE kb_sync SET result = $2 WHERE id = $1 AND status = 'crawling'", sync_id, info)
-
-        entries, notes = await (crawl or _crawler(source["kind"]))(source["config"], progress=progress)
-        current = await current_articles(source_id)
-        plan = make_plan(source_id, entries, current)
-        held = auto and too_many_removed(plan, len(current))
-        if held:
-            notes = notes + [f"Not applied by itself: {len(plan.removed):,} of the {len(current):,} pages now in the "
-                             f"collection weren't found this time (the site may have been down). Press Apply to "
-                             f"take them out anyway, or Discard."]
-        async with pool.acquire() as conn, conn.transaction():
-            await conn.execute("UPDATE kb_sync SET status = 'superseded', entries = NULL WHERE source_id = $1 "
-                               "AND status = 'checked'", source_id)
-            await conn.execute("UPDATE kb_sync SET status = 'checked', entries = $2, plan = $3, notes = $4, "
-                               "result = NULL WHERE id = $1", sync_id, [e.as_dict() for e in entries],
-                               plan.summary(), notes)
-        if not auto or held:
+        if crawl is None and isolated.enabled():
+            checked = await isolated.run("check", sync_id, source_id, int(auto))
+        else:
+            checked = await check_site(sync_id, source_id, auto=auto, crawl=crawl)
+        if not auto or checked["held"]:
             return
-        if plan.new or plan.changed or plan.removed:
+        if checked["changes"]:
             await start_apply(sync_id, "weekly refresh", embed=embed, db=db, llm=llm)
         else:
             async with pool.acquire() as conn, conn.transaction():
                 await conn.execute("UPDATE kb_sync SET status = 'done', entries = NULL, result = $2, "
                                    "finished_at = now() WHERE id = $1", sync_id,
-                                   {"added": 0, "changed": 0, "removed": 0, "unchanged": plan.unchanged,
+                                   {"added": 0, "changed": 0, "removed": 0, "unchanged": checked["unchanged"],
                                     "cost_usd": 0})
                 await conn.execute("UPDATE kb_source SET synced_at = now() WHERE id = $1", source_id)
     except Exception as e:  # noqa: BLE001  (shown on the sync page; the collection is as it was)
         logger.exception("Re-reading source %d failed", source_id)
         await pool.execute("UPDATE kb_sync SET status = 'failed', entries = NULL, finished_at = now(), error = $2 "
-                           "WHERE id = $1", sync_id,
-                           f"Couldn't read the site: {e.__class__.__name__}: {str(e)[:300]}. Nothing was changed.")
+                           "WHERE id = $1", sync_id, f"Couldn't read the site: {_failure(e)}. Nothing was changed.")
+
+
+async def check_site(sync_id: int, source_id: int, *, auto: bool, crawl=None) -> dict:
+    """Crawl the site and store what would change on the sync ("checked"). Returns {"held", "changes",
+    "unchanged"} (held: a weekly re-read that would take out too much waits for an admin)."""
+    pool = await _pool()
+    source = await get_source(source_id)
+
+    async def progress(info: dict) -> None:
+        await pool.execute("UPDATE kb_sync SET result = $2 WHERE id = $1 AND status = 'crawling'", sync_id, info)
+
+    entries, notes = await (crawl or _crawler(source["kind"]))(source["config"], progress=progress)
+    current = await current_articles(source_id)
+    plan = make_plan(source_id, entries, current)
+    held = auto and too_many_removed(plan, len(current))
+    if held:
+        notes = notes + [f"Not applied by itself: {len(plan.removed):,} of the {len(current):,} pages now in the "
+                         f"collection weren't found this time (the site may have been down). Press Apply to "
+                         f"take them out anyway, or Discard."]
+    async with pool.acquire() as conn, conn.transaction():
+        await conn.execute("UPDATE kb_sync SET status = 'superseded', entries = NULL WHERE source_id = $1 "
+                           "AND status = 'checked'", source_id)
+        await conn.execute("UPDATE kb_sync SET status = 'checked', entries = $2, plan = $3, notes = $4, "
+                           "result = NULL WHERE id = $1", sync_id, [e.as_dict() for e in entries],
+                           plan.summary(), notes)
+    return {"held": bool(held), "changes": bool(plan.new or plan.changed or plan.removed),
+            "unchanged": plan.unchanged}
 
 
 async def refresh_due_sources() -> list[int]:
@@ -394,20 +416,19 @@ async def start_apply(sync_id: int, by: str, *, embed=None, db: str | None = Non
 
 
 async def apply(sync_id: int, *, embed=None, db: str | None = None, llm=None) -> None:
+    """Write a checked sync (summaries, embeddings and rows: in a helper process unless fakes were passed in), then
+    refresh this process's search index."""
     import kb_index
     pool = await _pool()
-    row = await pool.fetchrow("SELECT y.source_id, y.entries, s.kb_id FROM kb_sync y JOIN kb_source s "
-                              "ON s.id = y.source_id WHERE y.id = $1", sync_id)
+    source_id = await pool.fetchval("SELECT source_id FROM kb_sync WHERE id = $1", sync_id)
     t = time.monotonic()
     try:
-        entries = [Entry.from_dict(d) for d in row["entries"]]
-        source_id, kb_id = row["source_id"], row["kb_id"]
-        plan = make_plan(source_id, entries, await current_articles(source_id))
-        summary_usd = await summarise(plan.new + plan.changed, llm)
-        result = await asyncio.to_thread(write_plan, db, source_id, kb_id, plan, embed or _embed)
-        result["cost_usd"] = round(result["cost_usd"] + summary_usd, 4)
-        result["summarised"] = sum(1 for e in plan.new + plan.changed if e.summary)
-        if plan.new or plan.changed or plan.removed:
+        if embed is None and llm is None and db is None and isolated.enabled():
+            result = await isolated.run("write", sync_id)
+            result.pop("peak_mb", None)
+        else:
+            result = await write_sync(sync_id, embed=embed, db=db, llm=llm)
+        if result["added"] or result["changed"] or result["removed"]:
             await asyncio.to_thread(kb_index.INDEX.refresh, db)
         result["secs"] = round(time.monotonic() - t, 1)
         async with pool.acquire() as conn, conn.transaction():
@@ -418,7 +439,22 @@ async def apply(sync_id: int, *, embed=None, db: str | None = None, llm=None) ->
     except Exception as e:  # noqa: BLE001  (shown on the sync page; the collection is as it was)
         logger.exception("Sync %d failed", sync_id)
         await pool.execute("UPDATE kb_sync SET status = 'checked', error = $2 WHERE id = $1", sync_id,
-                           f"Couldn't apply it: {e.__class__.__name__}: {str(e)[:300]}. Nothing was changed.")
+                           f"Couldn't apply it: {_failure(e)}. Nothing was changed.")
+
+
+async def write_sync(sync_id: int, *, embed=None, db: str | None = None, llm=None) -> dict:
+    """The heavy part of applying: English summaries, embeddings, and in one transaction the rows."""
+    pool = await _pool()
+    row = await pool.fetchrow("SELECT y.source_id, y.entries, s.kb_id FROM kb_sync y JOIN kb_source s "
+                              "ON s.id = y.source_id WHERE y.id = $1", sync_id)
+    entries = [Entry.from_dict(d) for d in row["entries"]]
+    source_id, kb_id = row["source_id"], row["kb_id"]
+    plan = make_plan(source_id, entries, await current_articles(source_id))
+    summary_usd = await summarise(plan.new + plan.changed, llm)
+    result = await asyncio.to_thread(write_plan, db, source_id, kb_id, plan, embed or _embed)
+    result["cost_usd"] = round(result["cost_usd"] + summary_usd, 4)
+    result["summarised"] = sum(1 for e in plan.new + plan.changed if e.summary)
+    return result
 
 
 def write_plan(db: str | None, source_id: int, kb_id: str, plan: Plan, embed) -> dict:

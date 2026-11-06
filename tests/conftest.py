@@ -7,8 +7,13 @@ collect_ignore_glob = ["e2e/*"]
 # The Exact/Fuzzy Search commands read articles from the in-memory index, which the app loads from Postgres. The
 # old search-engine scripts in this folder search at import time, so give them the original articles (from the
 # jsonl, no database). tests/fakes.py swaps in a tiny knowledge base for the agent tests.
+import os  # noqa: E402
 import sys  # noqa: E402
 from pathlib import Path  # noqa: E402
+
+# The tests pass fakes (LLM, embeddings, crawls) that can't go into a helper process, so ingest work runs in the
+# test process; tests/test_isolated.py turns helper processes on for itself.
+os.environ.setdefault("INGEST_ISOLATE", "0")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import kb_index  # noqa: E402
