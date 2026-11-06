@@ -178,9 +178,21 @@ def main(argv: list[str]) -> int:
         if not isinstance(e, JobError):
             logger.exception("Helper task %s %s failed", task, " ".join(args))
         result, code = {"error": str(e), "kind": type(e).__name__, "job_error": isinstance(e, JobError)}, 1
-    result["peak_mb"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
+    result["peak_mb"] = peak_mb()
     out.write_text(json.dumps(result))
     return code
+
+
+def peak_mb() -> int:
+    """This process's own peak memory. (Not ru_maxrss: across fork and exec it also counts the web process's.)"""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss // 1024
 
 
 if __name__ == "__main__":
