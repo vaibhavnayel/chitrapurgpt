@@ -204,6 +204,7 @@
 
 {% block scripts %}
 {{super()}}
+<script>window.DIACRITICAL_ROOT = {{ request.script_root|tojson }};  // URL prefix the app is served under, e.g. /diacritical</script>
 <script src="{{ url_for('static', filename='js/translator.js') }}"></script>
 <script>
     $(document).ready(function() {
@@ -218,7 +219,7 @@
             }
             
             $.ajax({
-                url: '/api/feedback',
+                url: {{ url_for('submit_feedback')|tojson }},
                 type: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ message, email }),

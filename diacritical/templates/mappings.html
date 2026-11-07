@@ -155,7 +155,7 @@
                             </select>
                         </div>
                         
-                        <a href="/api/mappings/download" class="btn btn-success" id="downloadBtn">
+                        <a href="{{ url_for('download_mappings') }}" class="btn btn-success" id="downloadBtn">
                             <i class="fas fa-download"></i> Download Mappings
                         </a>
                     </div>
@@ -191,7 +191,7 @@
                 <div class="card-header d-flex justify-content-between align-items-center">
                     <h4 class="mb-0">User Feedback</h4>
                     <div class="btn-group">
-                        <a href="/api/feedback/download" class="btn btn-success" id="downloadFeedbackBtn">
+                        <a href="{{ url_for('download_feedback') }}" class="btn btn-success" id="downloadFeedbackBtn">
                             <i class="fas fa-download"></i> Download Feedback
                         </a>
                     </div>
@@ -325,6 +325,7 @@
 
 {% block scripts %}
 {{super()}}
+<script>window.DIACRITICAL_ROOT = {{ request.script_root|tojson }};  // URL prefix the app is served under, e.g. /diacritical</script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap4.min.js"></script>
 <script src="https://cdn.datatables.net/select/1.3.4/js/dataTables.select.min.js"></script>
@@ -337,7 +338,7 @@
         // Load feedback data
         function loadFeedback() {
             $.ajax({
-                url: '/api/feedback',
+                url: {{ url_for('get_feedback')|tojson }},
                 type: 'GET',
                 success: function(data) {
                     const feedbackTable = $('#feedbackTable').DataTable();
@@ -392,7 +393,7 @@
         $('#confirmDeleteFeedback').click(function() {
             if (feedbackIdToDelete) {
                 $.ajax({
-                    url: `/api/feedback/${feedbackIdToDelete}`,
+                    url: `${window.DIACRITICAL_ROOT}/api/feedback/${feedbackIdToDelete}`,
                     type: 'DELETE',
                     success: function() {
                         $('#deleteFeedbackModal').modal('hide');

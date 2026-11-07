@@ -67,7 +67,7 @@ const TranslatorModule = (function() {
         const outputContainer = document.getElementById('outputText').closest('.text-panel');
         outputContainer.classList.add('loading');
         
-        fetch('/translate', {
+        fetch(`${window.DIACRITICAL_ROOT || ''}/translate`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

@@ -14,7 +14,7 @@ const MappingsManager = (function() {
     function initializeTable() {
         mappingsTable = $('#mappingsTable').DataTable({
             ajax: {
-                url: '/api/mappings',
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings`,
                 dataSrc: '',
                 beforeSend: function() {
                     // Show loading indicator
@@ -177,7 +177,7 @@ const MappingsManager = (function() {
             $submitBtn.prop('disabled', true);
             
             $.ajax({
-                url: '/api/mappings',
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings`,
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({
@@ -304,7 +304,7 @@ const MappingsManager = (function() {
             $btn.prop('disabled', true);
             
             $.ajax({
-                url: `/api/mappings/${id}`,
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings/${id}`,
                 method: 'PUT',
                 contentType: 'application/json',
                 data: JSON.stringify({
@@ -391,7 +391,7 @@ const MappingsManager = (function() {
             $btn.prop('disabled', true);
             
             $.ajax({
-                url: `/api/mappings/${deleteId}`,
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings/${deleteId}`,
                 method: 'DELETE',
                 success: function() {
                     $('#deleteModal').modal('hide');
@@ -436,7 +436,7 @@ const MappingsManager = (function() {
             $btn.prop('disabled', true);
             
             $.ajax({
-                url: '/api/mappings/batch-delete',
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings/batch-delete`,
                 method: 'POST',
                 contentType: 'application/json',
                 data: JSON.stringify({ ids: ids }),
@@ -493,7 +493,7 @@ const MappingsManager = (function() {
             $('#uploadStatus').html('<p class="text-info"><i class="fas fa-info-circle"></i> Uploading file...</p>');
             
             $.ajax({
-                url: '/api/mappings/upload',
+                url: `${window.DIACRITICAL_ROOT || ''}/api/mappings/upload`,
                 method: 'POST',
                 data: formData,
                 contentType: false,
