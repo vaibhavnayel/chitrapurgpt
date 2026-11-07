@@ -4,10 +4,8 @@ Handles CRUD operations for diacritic mappings.
 """
 
 import logging
-from database import db, DiacriticMapping, Feedback
+from .database import db, DiacriticMapping, Feedback
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def load_mappings_from_db() -> dict[str, str]:
@@ -101,7 +99,7 @@ def process_uploaded_mappings_file(file_path: str, mode: str = 'update') -> dict
     Returns:
         Dictionary with statistics about the operation
     """
-    from diacritics import load_mappings_from_file
+    from .diacritics import load_mappings_from_file
     
     try:
         # Load mappings from the uploaded file

@@ -7,10 +7,8 @@ import docx
 import re
 import unicodedata
 import logging
-from devnagri import convert_devanagari_tokens
+from .devnagri import convert_devanagari_tokens
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Text processing functions

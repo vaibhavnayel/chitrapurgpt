@@ -8,42 +8,46 @@ from functools import wraps
 import os
 import tempfile
 from werkzeug.utils import secure_filename
-from dotenv import load_dotenv
 from datetime import datetime
 
-# Import modules
-from database import init_db, DiacriticMapping, Feedback
-from diacritics import translate_text, load_mappings_from_file
-from db_operations import (
+# Import modules (relative: this is the `diacritical` package inside ChitrapurGPT, whose own app.py is top-level)
+from .database import init_db, DiacriticMapping, Feedback
+from .diacritics import translate_text, load_mappings_from_file
+from .db_operations import (
     load_mappings_from_db, save_mapping_to_db, update_mapping_in_db,
     delete_mapping_from_db, batch_delete_mappings_from_db,
     process_uploaded_mappings_file,
     save_feedback_to_db, get_all_feedback, delete_feedback_from_db
 )
 
-# Load environment variables
-load_dotenv()
-
-# Initialize Flask app
+# Initialize Flask app. It is served at /diacritical inside ChitrapurGPT (see ../diacritical_mount.py, which reads
+# the DIACRITICAL_* env vars and calls configure() on the first request); it reads no env vars itself.
 app = Flask(__name__)
 bootstrap = Bootstrap(app)
 
-# Database configuration
-database_url = os.environ.get('DATABASE_URL')
-# Fix for Render's postgres:// vs postgresql:// issue
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+# Set by configure()
+USERNAME = None
+PASSWORD = None
 
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# Initialize database
-init_db(app)
-
-# Get configuration from environment variables
-app.secret_key = os.environ.get('FLASK_SECRET_KEY')
-USERNAME = os.environ.get('APP_USERNAME')
-PASSWORD = os.environ.get('APP_PASSWORD')
+def configure(database_url, secret_key, username, password, cookie_path='/diacritical',
+              db_retries=12, db_retry_delay=5):
+    """Point the app at its database and set its secret and login, then check the tables (database.init_db,
+    which retries while the database is unreachable: 12 x 5 s, then it starts anyway). Called once, before the first
+    request is served."""
+    global USERNAME, PASSWORD
+    # Fix for Render's postgres:// vs postgresql:// issue
+    if database_url and database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    # Its own session cookie, scoped to its own URL prefix, so it can't clash with Chainlit's cookies
+    app.config['SESSION_COOKIE_NAME'] = 'diacritical_session'
+    app.config['SESSION_COOKIE_PATH'] = cookie_path
+    app.secret_key = secret_key
+    USERNAME = username
+    PASSWORD = password
+    init_db(app, retries=db_retries, delay=db_retry_delay)
 
 # Login decorator
 def login_required(f):
@@ -305,7 +309,3 @@ def download_feedback():
         return response
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-# Run the application
-if __name__ == '__main__':
-    app.run(debug=True)
