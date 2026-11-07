@@ -29,3 +29,13 @@ pypdf==6.21.2
 # adding magazine issues (ingest/): rendering pages and reading their text layer, and Cloudflare R2 (S3 API)
 pypdfium2==5.14.0
 boto3==1.43.120
+# Diacritical (diacritical/, a Flask app served at /diacritical; see diacritical_mount.py): its own pins, minus
+# gunicorn (it runs inside this app's server) and python-dotenv (1.0.1 above serves both)
+flask==3.0.2
+flask-bootstrap==3.3.7.1
+flask-sqlalchemy==3.1.1
+sqlalchemy==2.0.27
+psycopg2-binary==2.9.9
+python-docx==1.1.0
+# runs the Flask (WSGI) app inside Chainlit's ASGI server
+a2wsgi==1.10.10
