@@ -11,6 +11,11 @@ from chainlit.server import app as chainlit_server_app
 import preview_oauth
 preview_oauth.install(chainlit_server_app)
 
+# Diacritical (the Flask app in diacritical/) at /diacritical, with its own login and database; loaded on its first
+# request (see diacritical_mount.py). Installed before preview_idle, so its requests count as activity on previews.
+import diacritical_mount
+diacritical_mount.install(chainlit_server_app)
+
 # Admin dashboard at /admin (see admin.py), and idle tracking on PR previews (see preview_idle.py).
 import access
 import admin
