@@ -1,0 +1,255 @@
+/* Mappings page styles */
+
+/* Panel styling */
+#addMappingForm, #uploadPanel {
+    background: var(--card-bg);
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+    padding: 20px;
+    margin-bottom: 30px;
+    transition: var(--transition);
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+#addMappingForm:hover, #uploadPanel:hover {
+    box-shadow: var(--box-shadow-hover);
+}
+
+/* Section titles */
+#addMappingForm h4, #uploadPanel h4 {
+    color: var(--primary-color);
+    font-weight: 600;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--primary-color-light);
+}
+
+/* Form elements */
+.form-group {
+    margin-bottom: 15px;
+}
+
+/* Ensure all inputs use Calibri font */
+#addMappingForm input,
+#uploadPanel input,
+#editModal input,
+.dataTables_filter input,
+.page-length-selector select {
+    font-family: var(--input-font);
+}
+
+.form-control-file {
+    padding: 8px 0;
+}
+
+.custom-control {
+    margin-bottom: 10px;
+}
+
+.custom-control-label {
+    font-weight: normal;
+    cursor: pointer;
+    padding-left: 5px;
+}
+
+/* Batch actions */
+.batch-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 15px;
+    margin-bottom: 20px;
+    background: var(--card-bg);
+    padding: 15px;
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+}
+
+#selectedCount {
+    color: var(--text-color-light);
+    font-weight: 500;
+    transition: var(--transition);
+    margin-right: auto;
+}
+
+/* Page length selector */
+.page-length-selector {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+}
+
+.page-length-selector label {
+    margin-bottom: 0;
+    white-space: nowrap;
+    color: var(--text-color-light);
+    font-weight: 500;
+}
+
+.page-length-selector select {
+    width: auto;
+    padding: 4px 8px;
+    border-radius: var(--border-radius-sm);
+    border: 1px solid var(--border-color);
+    background-color: var(--card-bg);
+}
+
+/* Download button */
+#downloadBtn {
+    margin-left: 15px;
+    white-space: nowrap;
+}
+
+#downloadBtn i {
+    margin-right: 5px;
+}
+
+/* Table styling */
+.table-responsive {
+    background: var(--card-bg);
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+    padding: 15px;
+    margin-bottom: 30px;
+}
+
+.table {
+    margin-bottom: 0;
+}
+
+/* Ensure table cells use Calibri font */
+#mappingsTable,
+#mappingsTable th,
+#mappingsTable td,
+.dataTables_info,
+.dataTables_paginate {
+    font-family: var(--table-font);
+}
+
+.table th {
+    background-color: var(--background-color);
+}
+
+.table td {
+    vertical-align: middle;
+}
+
+/* Checkbox styling */
+.select-checkbox {
+    width: 30px;
+    position: relative;
+}
+
+.select-checkbox:before {
+    content: '';
+    width: 18px;
+    height: 18px;
+    border: 2px solid var(--border-color);
+    border-radius: 3px;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background-color: white;
+}
+
+.selected .select-checkbox:before {
+    background-color: var(--primary-color);
+    border-color: var(--primary-color);
+}
+
+.selected .select-checkbox:after {
+    content: '✓';
+    color: white;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 12px;
+}
+
+/* Action buttons */
+.action-buttons {
+    white-space: nowrap;
+}
+
+.action-buttons .btn {
+    margin: 0 3px;
+}
+
+/* Progress bars */
+.progress {
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.progress-bar {
+    background-color: var(--primary-color);
+}
+
+/* Status messages */
+#uploadStatus, #migrationStatus {
+    margin-top: 10px;
+    font-weight: 500;
+}
+
+/* Alerts */
+#alerts {
+    margin-bottom: 20px;
+}
+
+/* Fix for row height in the upload and add mapping panels */
+.row {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+.row > [class*="col-"] {
+    display: flex;
+    flex-direction: column;
+}
+
+/* Responsive adjustments */
+@media (max-width: 992px) {
+    .row > [class*="col-"] {
+        margin-bottom: 20px;
+    }
+    
+    .batch-actions {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .page-length-selector {
+        margin-left: 0;
+        margin-top: 10px;
+    }
+    
+    #downloadBtn {
+        margin-left: 0;
+        margin-top: 10px;
+    }
+}
+
+@media (max-width: 576px) {
+    .batch-actions {
+        padding: 10px;
+    }
+    
+    #selectedCount {
+        margin-bottom: 10px;
+    }
+    
+    .page-length-selector {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    #downloadBtn {
+        width: 100%;
+    }
+} 

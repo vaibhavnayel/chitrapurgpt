@@ -1,0 +1,262 @@
+{% extends "bootstrap/base.html" %}
+
+{% block title %}Diacritical Translator{% endblock %}
+
+{% block styles %}
+{{super()}}
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/base.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/translator.css') }}">
+<style>
+    /* Ensure Calibri is available as a fallback */
+    @font-face {
+        font-family: 'Calibri';
+        src: local('Calibri'), local('Calibri Regular');
+        font-weight: normal;
+        font-style: normal;
+    }
+    
+    @font-face {
+        font-family: 'Calibri';
+        src: local('Calibri Bold'), local('Calibri-Bold');
+        font-weight: bold;
+        font-style: normal;
+    }
+    
+    .feedback-modal .modal-header {
+        background-color: var(--primary-color);
+        color: white;
+        border-bottom: none;
+        padding: 20px 25px;
+    }
+    
+    .feedback-modal .modal-footer {
+        border-top: none;
+        padding: 15px 25px 25px;
+    }
+    
+    .feedback-modal .modal-body {
+        padding: 20px 25px;
+    }
+    
+    .feedback-modal .modal-content {
+        border: none;
+        border-radius: 8px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    }
+    
+    .feedback-modal .modal-footer .btn-primary {
+        background-color: var(--primary-color);
+        border-color: var(--primary-color);
+        padding: 8px 20px;
+        font-weight: 500;
+    }
+    
+    .feedback-modal .modal-footer .btn-secondary {
+        background-color: #e9ecef;
+        color: #495057;
+        border: none;
+        padding: 8px 20px;
+    }
+    
+    .feedback-modal .form-control {
+        border-radius: 4px;
+        border: 1px solid #ced4da;
+        padding: 10px 15px;
+    }
+    
+    .feedback-modal .form-control:focus {
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 0.2rem rgba(var(--primary-color-rgb, 0, 123, 255), 0.25);
+    }
+    
+    .feedback-success {
+        display: none;
+        text-align: center;
+        padding: 20px;
+    }
+    
+    .feedback-success i {
+        font-size: 48px;
+        color: #28a745;
+        margin-bottom: 15px;
+    }
+    
+    .action-buttons {
+        display: flex;
+        justify-content: center;
+        gap: 15px;
+        margin-top: 20px;
+    }
+    
+    .feedback-btn {
+        background-color: var(--secondary-color, #6c757d);
+        color: white;
+    }
+    
+    .feedback-btn:hover {
+        background-color: var(--secondary-color-dark, #5a6268);
+    }
+    
+    #feedbackMessage {
+        resize: none;
+        min-height: 150px;
+    }
+    
+    .feedback-modal .modal-dialog {
+        max-width: 600px;
+        width: 90%;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container translator-container">
+    <div class="page-header">
+        <h1 class="page-title">Diacritical Translator</h1>
+        <div class="nav-buttons">
+            {% if session.get('logged_in') %}
+            <a href="{{ url_for('mappings_page') }}" class="btn btn-primary">
+                <i class="fas fa-cog"></i> Manage Mappings
+            </a>
+            <a href="{{ url_for('logout') }}" class="btn btn-outline-danger">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </a>
+            {% else %}
+            <a href="{{ url_for('login') }}" class="btn btn-primary">
+                <i class="fas fa-sign-in-alt"></i> Login to Manage Mappings
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-6">
+            <div class="text-panel">
+                <h4>Input Text</h4>
+                <div class="form-group">
+                    <textarea class="form-control" id="inputText" rows="10" placeholder="Enter text here (supports English and देवनागरी)..."></textarea>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="text-panel">
+                <h4>Output Text</h4>
+                <div class="textarea-container">
+                    <textarea class="form-control" id="outputText" rows="10" readonly></textarea>
+                    <button class="copy-btn" id="copyBtn">
+                        <i class="far fa-copy"></i> Copy
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="translate-btn-container">
+        <div class="action-buttons">
+            <button class="translate-btn" id="translateBtn">
+                <i class="fas fa-language"></i> Add Diacritics
+            </button>
+            <button class="btn btn-secondary feedback-btn" data-toggle="modal" data-target="#feedbackModal">
+                <i class="fas fa-comment"></i> Send Feedback
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Feedback Modal -->
+<div class="modal fade feedback-modal" id="feedbackModal" tabindex="-1" role="dialog" aria-labelledby="feedbackModalLabel" aria-hidden="true">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="feedbackModalLabel">Send Feedback</h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                    <span aria-hidden="true">&times;</span>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="feedbackForm">
+                    <div class="form-group">
+                        <label for="feedbackMessage">Your Feedback</label>
+                        <textarea class="form-control" id="feedbackMessage" rows="8" placeholder="Tell us what you think..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label for="feedbackEmail">Email (optional)</label>
+                        <input type="email" class="form-control" id="feedbackEmail" placeholder="Your email address (optional)">
+                        <small class="form-text text-muted">We'll never share your email with anyone else.</small>
+                    </div>
+                </div>
+                <div id="feedbackSuccess" class="feedback-success">
+                    <i class="fas fa-check-circle"></i>
+                    <h4>Thank You!</h4>
+                    <p>Your feedback has been submitted successfully.</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+                <button type="button" class="btn btn-primary" id="submitFeedback">Submit Feedback</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{super()}}
+<script>window.DIACRITICAL_ROOT = {{ request.script_root|tojson }};  // URL prefix the app is served under, e.g. /diacritical</script>
+<script src="{{ url_for('static', filename='js/translator.js') }}"></script>
+<script>
+    $(document).ready(function() {
+        // Submit feedback
+        $('#submitFeedback').click(function() {
+            const message = $('#feedbackMessage').val().trim();
+            const email = $('#feedbackEmail').val().trim();
+            
+            if (!message) {
+                alert('Please enter your feedback message');
+                return;
+            }
+            
+            $.ajax({
+                url: {{ url_for('submit_feedback')|tojson }},
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify({ message, email }),
+                success: function(response) {
+                    // Show success message
+                    $('#feedbackForm').hide();
+                    $('#feedbackSuccess').show();
+                    
+                    // Reset form
+                    $('#feedbackMessage').val('');
+                    $('#feedbackEmail').val('');
+                    
+                    // Close modal after delay
+                    setTimeout(function() {
+                        $('#feedbackModal').modal('hide');
+                        // Reset for next time
+                        setTimeout(function() {
+                            $('#feedbackForm').show();
+                            $('#feedbackSuccess').hide();
+                        }, 500);
+                    }, 2000);
+                },
+                error: function(xhr) {
+                    let errorMsg = 'An error occurred while submitting your feedback';
+                    if (xhr.responseJSON && xhr.responseJSON.error) {
+                        errorMsg = xhr.responseJSON.error;
+                    }
+                    alert(errorMsg);
+                }
+            });
+        });
+        
+        // Reset modal when closed
+        $('#feedbackModal').on('hidden.bs.modal', function() {
+            $('#feedbackForm').show();
+            $('#feedbackSuccess').hide();
+        });
+    });
+</script>
+{% endblock %} 
