@@ -36,6 +36,7 @@ adding issues and collections.
 - `search_engine.py`: the Exact/Fuzzy Search commands
 - `access.py`, `admin.py`, `admin_kb.py`: who may sign in, the admin dashboard, and its collections and uploads
 - `preview_oauth.py`, `preview_idle.py`: Google sign-in and idle tracking on Render PR previews
+- `diacritical/`, `diacritical_mount.py`: Diacritical, a separate Flask app served at `/diacritical` (see below)
 
 ## Models and settings
 
@@ -153,6 +154,8 @@ pointing at the local pgvector copy. They only read the copy, and work in throwa
 same server and drop afterwards (`test_kb.py` copies the 5,924 articles in the old layout to test the migration and
 that the database gives exactly the jsonl's articles). Without it, those tests are skipped.
 `tests/test_ingest_jobs.py` runs a local S3 server (moto) in place of R2.
+`tests/test_diacritical_mount.py` (Diacritical at `/diacritical`) starts a throwaway Postgres from the Homebrew
+`postgresql@16`/`@15` binaries and is skipped without them.
 
 With real models (small API cost):
 ```bash
@@ -191,6 +194,32 @@ Admins (comma-separated emails in the `ADMIN_EMAILS` env var) sign in normally, 
 Removing someone only stops them signing in; their chats are kept. The People page also has one button per
 collection per person (✓ on, ✗ off); **Collections & uploads** (`/admin/kb`) is where issues are added, reviewed
 and published, and collections are created (`docs/INGEST.md`).
+
+## Diacritical (at `/diacritical`)
+
+Diacritical, the diacritics app (Flask; formerly its own repo `vaibhavnayel/diacritical`, brought in with its
+history by `git subtree`), lives in `diacritical/` and is served by this same web service at `/diacritical/`
+(`/diacritical` redirects there). `diacritical_mount.py`, installed from `app.py`, is an ASGI middleware in front of
+Chainlit: `/diacritical/...` goes to the Flask app (run through a2wsgi, with `SCRIPT_NAME=/diacritical`, so its
+`url_for` links carry the prefix); everything else goes to Chainlit unchanged. Chainlit's Google sign-in doesn't
+apply there: Diacritical keeps its own username/password login, with its own session cookie
+(`diacritical_session`, path `/diacritical`).
+
+It has its own database and settings, and reads only these env vars (never `DATABASE_URL`, which is ChitrapurGPT's):
+
+| Env var | Used for |
+|---|---|
+| `DIACRITICAL_DATABASE_URL` | its Postgres database (required; it creates its two tables there if missing) |
+| `DIACRITICAL_SECRET_KEY` | signs its session cookie |
+| `DIACRITICAL_USERNAME`, `DIACRITICAL_PASSWORD` | its login |
+
+Nothing of Diacritical loads at startup: its first request loads it in a worker thread (the table check retries for
+up to a minute while its database is unreachable), so it can't hold up or break the chat. If
+`DIACRITICAL_DATABASE_URL` is missing (or is ChitrapurGPT's own database), `/diacritical/...` answers 503
+"Diacritical is not configured"; if it fails to load, 503 "Diacritical is temporarily unavailable". The reason is in
+the log (`diacritical_mount`), and the chat is unaffected. Its tests: `tests/test_diacritical_mount.py` (a throwaway
+Homebrew Postgres; the real-server part also needs `VECTOR_DATABASE_URL`). `diacritical/requirements.txt` is its old
+standalone list; the root `requirements.txt` is what's installed.
 
 ## Deployment
 

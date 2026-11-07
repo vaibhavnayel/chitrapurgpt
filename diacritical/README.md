@@ -1,5 +1,12 @@
 # Diacritical Translator
 
+> **Now part of ChitrapurGPT.** This folder is served by the ChitrapurGPT web service at `/diacritical/`
+> (see `../diacritical_mount.py` and the root README's Diacritical section). Its settings there are only
+> `DIACRITICAL_DATABASE_URL`, `DIACRITICAL_SECRET_KEY`, `DIACRITICAL_USERNAME` and `DIACRITICAL_PASSWORD`, and its
+> dependencies are in the root `requirements.txt`. The standalone setup and deployment below (`python app.py`,
+> `DATABASE_URL`, `FLASK_SECRET_KEY`, `APP_USERNAME`, `APP_PASSWORD`, gunicorn) describe the old separate app and
+> don't apply here.
+
 A web application for adding diacritics to input text based on a dictionary of mappings. The application uses Flask for the backend and PostgreSQL for storing the mappings.
 
 ## Features
