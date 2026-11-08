@@ -9,6 +9,7 @@ MAPPINGS = {
     "parijnanashram": "{{}}{{parijñānāshram}}",
     "trayodashi": "{{}}{{trayodashī}}",
     "parijnanashram trayodashi": "{{}}{{parijñānāshrama trayodashī}}",
+    "parijnanashram-trayodashi": "{{}}{{parijñānāshrama trayodashī}}",
     "kshama": "ks͟hamā",
     "kshama- yachana": "ks͟hamā-yāchanā",
     "jaijaikara-s": "{{}}{{jaijaikāra-s}}",
@@ -51,6 +52,9 @@ def test_a_phrase_wins_over_its_words():
     assert t("parijnanashram trayodashi") == "Parijñānāshrama Trayodashī"
     assert t("Parijnanashram alone, Trayodashi alone") == "Parijñānāshram alone, Trayodashī alone"
     assert t("Parijnanashram  Trayodashi") == "Parijñānāshrama Trayodashī"  # two spaces
+    # always capital: every word of the result, however it was typed
+    assert t("Parijnanashram-trayodashi") == "Parijñānāshrama Trayodashī"
+    assert t("PARIJNANASHRAM TRAYODASHI") == "PARIJÑĀNĀSHRAMA TRAYODASHĪ"
 
 
 def test_the_longest_phrase_wins():

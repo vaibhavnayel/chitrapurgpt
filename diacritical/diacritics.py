@@ -109,6 +109,12 @@ def _capitalise(word: str) -> str:
     return "".join(p[:1].upper() + p[1:].lower() for p in re.split(r"(\s+)", word))
 
 
+def _name_case(text: str) -> str:
+    """An always-capital result: every word separated by a space starts with a capital ("Parijñānāshrama
+    Trayodashī"); the part after a hyphen keeps the typed case ("Jaijaikāra-s")."""
+    return re.sub(r"(?<![^\s,{])([^\W\d_])", lambda m: m.group(1).upper(), text)
+
+
 def match_case(word: str, mapping: str) -> str:
     """Match the case of a mapping to a word"""
     if _has_parts(word):
@@ -177,15 +183,17 @@ def apply_mapping(word: str, mapping: str) -> str:
             return handle_one_to_many_mappings(word, matches[0])
         elif len(matches) == 2:
             #case 3
+            always_capital = not matches[0][2:-2].strip()
             if word[0].islower():
                 lower_case_mapping = handle_one_to_many_mappings(word, matches[0])
                 if lower_case_mapping=="":
                     # case 4
-                    return handle_one_to_many_mappings(_capitalise(word), matches[1])
+                    return _name_case(handle_one_to_many_mappings(_capitalise(word), matches[1]))
                 else:
                     return lower_case_mapping
             else:
-                return handle_one_to_many_mappings(word, matches[1])
+                result = handle_one_to_many_mappings(word, matches[1])
+                return _name_case(result) if always_capital and not word.isupper() else result
         else:
             raise ValueError(f"Invalid mapping: {mapping}")
     else:
