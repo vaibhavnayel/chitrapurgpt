@@ -101,17 +101,11 @@ def _match_case_parts(word: str, mapping: str) -> str:
     return "".join(parts)
 
 
-def _capitalise(word: str) -> str:
-    """The typed word as a name (for "always capital" entries): each word of a phrase starts with a capital, but not
-    the part after a hyphen ("laddu-s" -> "Laddu-s")."""
-    if not _has_parts(word):
-        return word.title()
-    return "".join(p[:1].upper() + p[1:].lower() for p in re.split(r"(\s+)", word))
 
 
 def _name_case(text: str) -> str:
     """An always-capital result: every word separated by a space starts with a capital ("Parijñānāshrama
-    Trayodashī"); the part after a hyphen keeps the typed case ("Jaijaikāra-s")."""
+    Trayodashī"), and the part after a hyphen doesn't ("Jaijaikāra-s", "Sandhyā-vandana"), however it was typed."""
     return re.sub(r"(?<![^\s,{])([^\W\d_])", lambda m: m.group(1).upper(), text)
 
 
@@ -183,17 +177,15 @@ def apply_mapping(word: str, mapping: str) -> str:
             return handle_one_to_many_mappings(word, matches[0])
         elif len(matches) == 2:
             #case 3
-            always_capital = not matches[0][2:-2].strip()
+            if not matches[0][2:-2].strip():
+                # case 4: always capital, however it's typed (but kept in capitals when typed in capitals)
+                if len(word) > 1 and word.isupper():
+                    return handle_one_to_many_mappings(word, matches[1])
+                return _name_case(handle_one_to_many_mappings(word.lower(), matches[1]))
             if word[0].islower():
-                lower_case_mapping = handle_one_to_many_mappings(word, matches[0])
-                if lower_case_mapping=="":
-                    # case 4
-                    return _name_case(handle_one_to_many_mappings(_capitalise(word), matches[1]))
-                else:
-                    return lower_case_mapping
+                return handle_one_to_many_mappings(word, matches[0])
             else:
-                result = handle_one_to_many_mappings(word, matches[1])
-                return _name_case(result) if always_capital and not word.isupper() else result
+                return handle_one_to_many_mappings(word, matches[1])
         else:
             raise ValueError(f"Invalid mapping: {mapping}")
     else:

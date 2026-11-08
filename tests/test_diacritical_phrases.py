@@ -22,6 +22,8 @@ MAPPINGS = {
     "puja": "pūjā",
     "seva": "sevā",
     "puja-seva": "pūjā-sevā",
+    "sandhya vandana": "{{}}{{sandhyā-vandana}}",
+    "sandhya-vandana": "{{}}{{sandhyā-vandana}}",
     "one two three": "ōne twō thrēē",
     "one two": "ōne-twō",
 }
@@ -55,6 +57,9 @@ def test_a_phrase_wins_over_its_words():
     # always capital: every word of the result, however it was typed
     assert t("Parijnanashram-trayodashi") == "Parijñānāshrama Trayodashī"
     assert t("PARIJNANASHRAM TRAYODASHI") == "PARIJÑĀNĀSHRAMA TRAYODASHĪ"
+    # ... and the same however the hyphen and capitals were typed
+    for typed in ("sandhya vandana", "Sandhya vandana", "Sandhya Vandana", "sandhya-vandana", "Sandhya-Vandana"):
+        assert t(typed) == "Sandhyā-vandana", typed
 
 
 def test_the_longest_phrase_wins():
