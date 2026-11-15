@@ -24,6 +24,9 @@ def test_result_keeps_its_marks_in_the_house_style():
     assert clean_result("t\u0323\u0332h\u0332") == "\u1e6d\u035fh"           # ṭ̲h̲ -> ṭ͟h
     assert clean_result("vṛks\u035f\u035fha") == "vṛks\u035fha"              # doubled tie
     assert clean_result("d\u0323") == "\u1e0d"                               # ḍ in pieces -> U+1E0D
+    assert clean_result("{}}{{hebl̃ekar}}") == "{{}}{{hebl̃ekar}}"                # broken brackets
+    assert clean_result("{{kākḍā}}}") == "{{kākḍā}}"
+    assert clean_result("{{}} {{māṇāyī}}") == "{{}}{{māṇāyī}}"
     assert clean_result("{{nāmāvalī (h), nāmāvaliḥ (s)}}") == "{{nāmāvalī (h), nāmāvaliḥ (s)}}"
 
 

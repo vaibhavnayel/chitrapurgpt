@@ -3,8 +3,9 @@
 - Plain text: diacritical marks removed (nāmāvalih -> namavalih), spaces at the start and end removed, runs of
   spaces between words made one (so phrases such as "parijnanashram trayodashi" keep working), small letters.
 - Diacritic text: spaces at the start and end removed, runs of spaces made one, spaces between {{ }} groups removed,
-  an underlined pair (s̲h̲, U+0332 under each letter) turned into the tie (s͟h, U+035F), a doubled tie made single,
-  and letters stored in pieces joined into single characters (NFC: d + dot below becomes ḍ U+1E0D), small letters.
+  broken brackets repaired (any run of { or } becomes {{ or }}, so "{}}{{x}}" becomes "{{}}{{x}}"), an underlined
+  pair (s̲h̲, U+0332 under each letter) turned into the tie (s͟h, U+035F), a doubled tie made single, and letters
+  stored in pieces joined into single characters (NFC: d + dot below becomes ḍ U+1E0D), small letters.
 """
 import re
 import unicodedata
@@ -22,5 +23,7 @@ def clean_result(text: str) -> str:
     t = re.sub(rf"(\w{_MARKS})\u0332(\w{_MARKS})\u0332", "\\1\u035f\\2", t)
     t = re.sub("\u035f+", "\u035f", t)
     t = re.sub(r"\s+", " ", t)
+    t = re.sub(r"\{+", "{{", t)
+    t = re.sub(r"\}+", "}}", t)
     t = re.sub(r"\}\}\s+\{\{", "}}{{", t)
     return unicodedata.normalize("NFC", t).lower()

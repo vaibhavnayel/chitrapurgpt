@@ -155,7 +155,8 @@ const MappingsManager = (function() {
     }
     
     // The house style (the same as cleaning.py on the server): the plain text loses its diacritical marks, and both
-    // lose the spaces at their start and end (spaces between words stay, so phrases keep working).
+    // lose the spaces at their start and end (spaces between words stay, so phrases keep working); the result's
+    // broken {{ }} brackets are repaired.
     function cleanPlain(value) {
         return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
     }
@@ -164,7 +165,7 @@ const MappingsManager = (function() {
         const marks = '[\\u0300-\\u0331\\u0333-\\u036f]*';
         const pair = new RegExp('([\\p{L}\\p{N}_]' + marks + ')\\u0332([\\p{L}\\p{N}_]' + marks + ')\\u0332', 'gu');
         return value.trim().normalize('NFD').replace(pair, '$1\u035f$2').replace(/\u035f+/g, '\u035f')
-            .replace(/\s+/g, ' ').replace(/\}\}\s+\{\{/g, '}}{{').normalize('NFC').toLowerCase();
+            .replace(/\s+/g, ' ').replace(/\{+/g, '{{').replace(/\}+/g, '}}').replace(/\}\}\s+\{\{/g, '}}{{').normalize('NFC').toLowerCase();
     }
 
     function cleanerFor(input) {
