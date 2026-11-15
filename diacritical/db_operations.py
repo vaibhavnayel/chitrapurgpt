@@ -5,6 +5,7 @@ Handles CRUD operations for diacritic mappings.
 
 import logging
 from .database import db, DiacriticMapping, Feedback
+from .cleaning import clean_plain, clean_result
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,13 @@ def process_uploaded_mappings_file(file_path: str, mode: str = 'update') -> dict
     from .diacritics import load_mappings_from_file
     
     try:
-        # Load mappings from the uploaded file
-        uploaded_mappings = load_mappings_from_file(file_path)
+        # Load mappings from the uploaded file, in the house style (cleaning.py); lines whose plain text is empty
+        # once cleaned are skipped
+        uploaded_mappings = {}
+        for plain_text, diacritic_text in load_mappings_from_file(file_path).items():
+            plain_text, diacritic_text = clean_plain(plain_text), clean_result(diacritic_text)
+            if plain_text and diacritic_text:
+                uploaded_mappings[plain_text] = diacritic_text
         logger.info(f"Loaded {len(uploaded_mappings)} mappings from uploaded file")
         
         stats = {

@@ -154,14 +154,31 @@ const MappingsManager = (function() {
         }, 5000);
     }
     
+    // The house style (the same as cleaning.py on the server): the plain text loses its diacritical marks, and both
+    // lose the spaces at their start and end (spaces between words stay, so phrases keep working).
+    function cleanPlain(value) {
+        return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+    }
+
+    function cleanResult(value) {
+        const marks = '[\\u0300-\\u0331\\u0333-\\u036f]*';
+        const pair = new RegExp('([\\p{L}\\p{N}_]' + marks + ')\\u0332([\\p{L}\\p{N}_]' + marks + ')\\u0332', 'gu');
+        return value.trim().normalize('NFD').replace(pair, '$1\u035f$2').replace(/\u035f+/g, '\u035f')
+            .replace(/\s+/g, ' ').replace(/\}\}\s+\{\{/g, '}}{{').normalize('NFC').toLowerCase();
+    }
+
+    function cleanerFor(input) {
+        return /plain/i.test(input.id) ? cleanPlain : cleanResult;
+    }
+
     // Add new mapping
     function setupAddMappingForm() {
         $('#mappingForm').on('submit', function(e) {
             e.preventDefault();
             
             // Convert inputs to lowercase
-            const plainText = $('#plainText').val().trim().toLowerCase();
-            const diacriticText = $('#diacriticText').val().trim().toLowerCase();
+            const plainText = cleanPlain($('#plainText').val());
+            const diacriticText = cleanResult($('#diacriticText').val());
             
             // Update the input fields with lowercase values
             $('#plainText').val(plainText);
@@ -212,7 +229,10 @@ const MappingsManager = (function() {
             const input = $(this);
             const cursorPosition = this.selectionStart;
             const value = input.val();
-            const lowercaseValue = value.toLowerCase();
+            let lowercaseValue = value.toLowerCase();
+            if (/plain/i.test(this.id)) {
+                lowercaseValue = lowercaseValue.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+            }
             
             // Only update if there's a difference to avoid cursor jumping
             if (value !== lowercaseValue) {
@@ -227,9 +247,10 @@ const MappingsManager = (function() {
             const input = $(this);
             // Use setTimeout to get the value after the paste event completes
             setTimeout(function() {
-                const value = input.val();
-                input.val(value.toLowerCase());
+                input.val(cleanerFor(input[0])(input.val()));
             }, 0);
+        }).on('blur', function() {
+            $(this).val(cleanerFor(this)($(this).val()));
         });
     }
     
@@ -290,8 +311,8 @@ const MappingsManager = (function() {
             const id = $('#editId').val();
             
             // Convert inputs to lowercase
-            const plainText = $('#editPlainText').val().trim().toLowerCase();
-            const diacriticText = $('#editDiacriticText').val().trim().toLowerCase();
+            const plainText = cleanPlain($('#editPlainText').val());
+            const diacriticText = cleanResult($('#editDiacriticText').val());
             
             // Update the input fields with lowercase values
             $('#editPlainText').val(plainText);
@@ -345,7 +366,10 @@ const MappingsManager = (function() {
             const input = $(this);
             const cursorPosition = this.selectionStart;
             const value = input.val();
-            const lowercaseValue = value.toLowerCase();
+            let lowercaseValue = value.toLowerCase();
+            if (/plain/i.test(this.id)) {
+                lowercaseValue = lowercaseValue.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+            }
             
             // Only update if there's a difference to avoid cursor jumping
             if (value !== lowercaseValue) {
@@ -360,9 +384,10 @@ const MappingsManager = (function() {
             const input = $(this);
             // Use setTimeout to get the value after the paste event completes
             setTimeout(function() {
-                const value = input.val();
-                input.val(value.toLowerCase());
+                input.val(cleanerFor(input[0])(input.val()));
             }, 0);
+        }).on('blur', function() {
+            $(this).val(cleanerFor(this)($(this).val()));
         });
     }
     

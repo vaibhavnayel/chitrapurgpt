@@ -13,6 +13,7 @@ from datetime import datetime
 # Import modules (relative: this is the `diacritical` package inside ChitrapurGPT, whose own app.py is top-level)
 from .database import init_db, DiacriticMapping, Feedback
 from .diacritics import translate_text, load_mappings_from_file
+from .cleaning import clean_plain, clean_result
 from .db_operations import (
     load_mappings_from_db, save_mapping_to_db, update_mapping_in_db,
     delete_mapping_from_db, batch_delete_mappings_from_db,
@@ -113,8 +114,8 @@ def get_mappings():
 @login_required
 def add_mapping():
     data = request.json
-    plain_text = data.get('plain_text', '').strip().lower()
-    diacritic_text = data.get('diacritic_text', '').strip().lower()
+    plain_text = clean_plain(data.get('plain_text', ''))
+    diacritic_text = clean_result(data.get('diacritic_text', ''))
     
     if not plain_text or not diacritic_text:
         return jsonify({'error': 'Both plain text and diacritic text are required'}), 400
@@ -134,8 +135,8 @@ def add_mapping():
 @login_required
 def update_mapping(mapping_id):
     data = request.json
-    plain_text = data.get('plain_text', '').strip().lower()
-    diacritic_text = data.get('diacritic_text', '').strip().lower()
+    plain_text = clean_plain(data.get('plain_text', ''))
+    diacritic_text = clean_result(data.get('diacritic_text', ''))
     
     if not plain_text or not diacritic_text:
         return jsonify({'error': 'Both plain text and diacritic text are required'}), 400
