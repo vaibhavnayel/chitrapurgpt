@@ -193,7 +193,8 @@ Adding issues has its own eval: read → check → split (no publish) on a folde
 Admins (comma-separated emails in the `ADMIN_EMAILS` env var) sign in normally, then open `/admin`.
 Removing someone only stops them signing in; their chats are kept. The People page also has one button per
 collection per person (✓ on, ✗ off); **Collections & uploads** (`/admin/kb`) is where issues are added, reviewed
-and published, and collections are created (`docs/INGEST.md`).
+and published, and collections are created (`docs/INGEST.md`). **Diacritical words** (`/admin/words`) maintains
+Diacritical's word list (below).
 
 ## Diacritical (at `/diacritical`)
 
@@ -220,6 +221,34 @@ up to a minute while its database is unreachable), so it can't hold up or break 
 the log (`diacritical_mount`), and the chat is unaffected. Its tests: `tests/test_diacritical_mount.py` (a throwaway
 Homebrew Postgres; the real-server part also needs `VECTOR_DATABASE_URL`). `diacritical/requirements.txt` is its old
 standalone list; the root `requirements.txt` is what's installed.
+
+### Diacritical words dashboard (`/admin/words`)
+
+For ChitrapurGPT admins (Google sign-in, `ADMIN_EMAILS`; **Diacritical words** in the admin header). It maintains
+Diacritical's word list without codes: search, add and edit words with plain boxes (Normal, Always capital, Name,
+Choices; an "Advanced: stored code" box for entries the boxes can't show), and **Add words**: upload Word (.docx),
+PDF (read with pypdf) or .txt documents, or an offline list (.xlsx with plain/result columns found by their headers,
+or `plain,result` lines). Each upload becomes a review: different from our list, new words, written without marks,
+style only, doubtful, already in the list; one choice per row, then **Accept** applies it in one transaction (each
+word is checked against what the review showed first). Words can go to **Pending** (downloadable for the
+Diacriticals team; their answered sheet is uploaded back as a list), every change is in **History** with undo, the
+review report downloads as Excel, and **Try it** runs the translator on the list being worked on. Every saved entry
+goes through `diacritical/cleaning.py` (the house style). Code: `admin_words.py` (pages),
+`diacritical/harvest.py` (reading files, sorting words, what Accept does; no database),
+`diacritical/wordlist.py` (database).
+
+| Env var | Used for |
+|---|---|
+| `DIACRITICAL_WORDS_LIST` | `trial` (default): work on `diacritic_mappings_trial`, a copy of the real list made on first use (a button on the Word list starts it again from the real list); the translator never reads it. `live`: work on the real `diacritic_mappings`, which the translator uses straight away. |
+| `DIACRITICAL_DATABASE_URL` | the same database as Diacritical (never `DATABASE_URL`) |
+
+Every page says which list it is on. In that database it adds (if missing) `dia_review` (uploads and their choices),
+`dia_batch` and `dia_change` (each change with the values before and after, for undo) and `dia_pending`; each row
+has `list_name` (`trial`/`live`), so the two never mix. It doesn't touch the old Mappings page or the
+`diacritic_mapping_changes` table. Tests: `tests/test_words_harvest.py` (no database), and
+`tests/test_words_db.py` / `tests/test_words_pages.py` with
+`WORDS_TEST_DATABASE_URL=postgresql://postgres@localhost:5433/postgres` (each test makes and drops its own database;
+skipped without it).
 
 ## Deployment
 
