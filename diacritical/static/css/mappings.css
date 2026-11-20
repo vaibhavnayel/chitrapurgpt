@@ -253,3 +253,120 @@
         width: 100%;
     }
 } 
+/* Add / Edit: the Type radios and their boxes (mapping_form.js writes the stored code) */
+/* radio and label side by side; a long label wraps under itself, not under the radio */
+.type-option {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 6px;
+}
+
+.type-option .custom-control-input {
+    flex: none;
+    margin: 4px 0 0;
+}
+
+.type-option .custom-control-label {
+    flex: 1;
+    margin-bottom: 0;
+    padding-left: 8px;
+    line-height: 1.45;
+}
+
+.type-boxes .box-choices .custom-checkbox {
+    margin-top: 4px;
+}
+
+.type-boxes .box-choices .custom-control-label {
+    padding-left: 4px;
+}
+
+#mappingForm button[type="submit"] {
+    margin-top: 12px;
+}
+
+.type-help {
+    color: var(--text-muted);
+    font-size: 0.92em;
+}
+
+.box-hint {
+    color: var(--text-muted);
+    font-weight: normal;
+    font-size: 0.9em;
+}
+
+#addMappingForm textarea,
+#editModal textarea,
+.what-it-gives .give,
+.saved-as span {
+    font-family: var(--input-font);
+}
+
+.type-fields {
+    transition: opacity 0.2s ease;
+}
+
+.advanced-wins .type-fields {
+    opacity: 0.45;
+}
+
+.what-it-gives {
+    background: var(--light-color);
+    border: 1px solid var(--gray-light);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 0.95em;
+}
+
+.what-it-gives .give-label {
+    color: var(--text-muted);
+}
+
+.what-it-gives .give {
+    font-weight: 600;
+    font-size: 1.1em;
+    word-break: break-word;
+}
+
+.what-it-gives .saved-as {
+    color: var(--gray-color);
+    font-size: 0.85em;
+    word-break: break-all;
+}
+
+.box-problems {
+    font-size: 0.88em;
+    white-space: pre-line;
+}
+
+.box-problems:empty {
+    display: none;
+}
+
+.type-choice > label {
+    display: block;
+    margin-bottom: 4px;
+}
+
+.advanced-row {
+    margin: 8px 0;
+}
+
+.advanced-toggle {
+    font-size: 0.9em;
+}
+
+.advanced-box {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--warning-color);
+    background: #fffaf0;
+    border-radius: 4px;
+}
+
+.advanced-note {
+    font-size: 0.88em;
+    color: #8a5a00;
+    margin-bottom: 6px;
+}

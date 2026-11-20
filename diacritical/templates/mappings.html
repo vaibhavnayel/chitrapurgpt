@@ -1,5 +1,63 @@
 {% extends "bootstrap/base.html" %}
 
+{% macro type_boxes(p, code_id) %}
+{#- The Type radios and the plain boxes that write the stored code (static/js/mapping_form.js); the old code box is
+    under Advanced (id code_id). p is the id prefix: "add" or "edit". -#}
+<div class="type-boxes" id="{{ p }}Boxes">
+    <div class="type-fields">
+        <div class="form-group type-choice">
+            <label>Type:</label>
+            {% for value, title, help in [
+                ("normal", "Normal", "follows how it's typed (krishna → kṛs͟hṇa, Krishna → Kṛs͟hṇa)"),
+                ("capital", "Always capital", "for places and names (always starts with a capital letter)"),
+                ("name", "Name", "different when typed with a capital (god → gŏḍ, but God → God)"),
+                ("choices", "Choices", "two or more spellings, all shown")] %}
+            <div class="custom-control custom-radio type-option">
+                <input type="radio" id="{{ p }}Type-{{ value }}" name="{{ p }}Type" value="{{ value }}"
+                       class="custom-control-input"{% if loop.first %} checked{% endif %}>
+                <label class="custom-control-label" for="{{ p }}Type-{{ value }}"><strong>{{ title }}</strong>
+                    <span class="type-help">&ndash; {{ help }}</span></label>
+            </div>
+            {% endfor %}
+        </div>
+        <div class="form-group box-result">
+            <label for="{{ p }}Result">Result <span class="box-hint">(the word with its marks)</span></label>
+            <input type="text" class="form-control" id="{{ p }}Result" autocomplete="off">
+        </div>
+        <div class="form-group box-name" style="display: none;">
+            <label for="{{ p }}AsName">As a name <span class="box-hint">(what it gives when typed with a capital)</span></label>
+            <input type="text" class="form-control" id="{{ p }}AsName" autocomplete="off">
+        </div>
+        <div class="form-group box-choices" style="display: none;">
+            <label for="{{ p }}Choices">Choices</label>
+            <textarea class="form-control" id="{{ p }}Choices" rows="3"></textarea>
+            <small class="form-text text-muted">One spelling per line; a label in brackets is fine, e.g. nāmāvalī (hindi)</small>
+            <div class="custom-control custom-checkbox">
+                <input type="checkbox" class="custom-control-input" id="{{ p }}ChoicesCapital">
+                <label class="custom-control-label" for="{{ p }}ChoicesCapital">Always capital</label>
+            </div>
+        </div>
+    </div>
+    <div class="what-it-gives">
+        <div><span class="give-label">What it will give:</span> <span class="give" id="{{ p }}Give">&ndash;</span></div>
+        <div class="saved-as">Saved as: <span id="{{ p }}SavedAs">&ndash;</span></div>
+        <div class="box-problems text-danger" id="{{ p }}Problems"></div>
+    </div>
+    <div class="advanced-row">
+        <a href="#" class="advanced-toggle" id="{{ p }}AdvancedToggle" aria-expanded="false"
+           aria-controls="{{ p }}Advanced"><i class="fas fa-caret-right"></i> Advanced: type the code yourself</a>
+        <div class="advanced-box" id="{{ p }}Advanced" style="display: none;">
+            <div class="advanced-note" id="{{ p }}AdvancedNote" style="display: none;"></div>
+            <label for="{{ code_id }}">Diacritic Text (code):</label>
+            <input type="text" class="form-control" id="{{ code_id }}" autocomplete="off">
+            <small class="form-text text-muted">When this box is filled, its code is saved and the boxes above are not used.</small>
+        </div>
+    </div>
+    <small class="form-text text-muted"><i class="fas fa-info-circle"></i> Saved in small letters, without extra spaces;
+        Plain Text loses its marks; s̲h̲ becomes s͟h.</small>
+</div>
+{% endmacro %}
+
 {% block title %}Manage Diacritical Mappings{% endblock %}
 
 {% block styles %}
@@ -52,6 +110,10 @@
                     <h4 class="mb-0">Instructions</h4>
                 </div>
                 <div class="card-body">
+                    <p class="text-muted">
+                        Add and Edit now write these codes for you: choose a Type. The codes below are what the
+                        table shows, and what the Advanced box takes.
+                    </p>
                     <p>
                         <strong>One-to-one mapping:</strong><br>
                         - Map a single word to a single word<br>
@@ -90,11 +152,7 @@
                         <label for="plainText">Plain Text:</label>
                         <input type="text" class="form-control" id="plainText" required>
                     </div>
-                    <div class="form-group">
-                        <label for="diacriticText">Diacritic Text:</label>
-                        <input type="text" class="form-control" id="diacriticText" required>
-                        <small class="form-text text-muted"><i class="fas fa-info-circle"></i> All text will be automatically converted to lowercase. Plain Text loses its diacritical marks; both lose spaces at the start and end (spaces between words stay); s̲h̲ becomes s͟h.</small>
-                    </div>
+                    {{ type_boxes("add", "diacriticText") }}
                     <button type="submit" class="btn btn-success">
                         <i class="fas fa-plus"></i> Add Mapping
                     </button>
@@ -235,11 +293,7 @@
                         <label for="editPlainText">Plain Text:</label>
                         <input type="text" class="form-control" id="editPlainText" required>
                     </div>
-                    <div class="form-group">
-                        <label for="editDiacriticText">Diacritic Text:</label>
-                        <input type="text" class="form-control" id="editDiacriticText" required>
-                        <small class="form-text text-muted"><i class="fas fa-info-circle"></i> All text will be automatically converted to lowercase. Plain Text loses its diacritical marks; both lose spaces at the start and end (spaces between words stay); s̲h̲ becomes s͟h.</small>
-                    </div>
+                    {{ type_boxes("edit", "editDiacriticText") }}
                 </form>
             </div>
             <div class="modal-footer">
@@ -329,6 +383,7 @@
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap4.min.js"></script>
 <script src="https://cdn.datatables.net/select/1.3.4/js/dataTables.select.min.js"></script>
+<script src="{{ url_for('static', filename='js/mapping_form.js') }}"></script>
 <script src="{{ url_for('static', filename='js/mappings.js') }}"></script>
 <script>
     $(document).ready(function() {

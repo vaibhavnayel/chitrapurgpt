@@ -154,43 +154,172 @@ const MappingsManager = (function() {
         }, 5000);
     }
     
-    // The house style (the same as cleaning.py on the server): the plain text loses its diacritical marks, and both
-    // lose the spaces at their start and end (spaces between words stay, so phrases keep working); the result's
-    // broken {{ }} brackets are repaired.
-    function cleanPlain(value) {
-        return value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-    }
-
-    function cleanResult(value) {
-        const marks = '[\\u0300-\\u0331\\u0333-\\u036f]*';
-        const pair = new RegExp('([\\p{L}\\p{N}_]' + marks + ')\\u0332([\\p{L}\\p{N}_]' + marks + ')\\u0332', 'gu');
-        return value.trim().normalize('NFD').replace(pair, '$1\u035f$2').replace(/\u035f+/g, '\u035f')
-            .replace(/\s+/g, ' ').replace(/\{+/g, '{{').replace(/\}+/g, '}}').replace(/\}\}\s+\{\{/g, '}}{{').normalize('NFC').toLowerCase();
-    }
+    // The house style (the same as cleaning.py on the server; in mapping_form.js): the plain text loses its
+    // diacritical marks, and both lose the spaces at their start and end (spaces between words stay, so phrases keep
+    // working); the result's broken {{ }} brackets are repaired. The Choices box is cleaned line by line.
+    const Codes = window.MappingCodes;
+    const cleanPlain = Codes.cleanPlain;
+    const cleanResult = Codes.cleanResult;
 
     function cleanerFor(input) {
-        return /plain/i.test(input.id) ? cleanPlain : cleanResult;
+        if (/plain/i.test(input.id)) return cleanPlain;
+        return input.tagName === 'TEXTAREA' ? Codes.cleanChoicesText : cleanResult;
     }
+
+    // The Type radios and boxes of one form (Add: prefix 'add', Edit: 'edit'); the old code box is under Advanced.
+    function TypeForm(prefix, codeSelector, plainSelector) {
+        const $root = $('#' + prefix + 'Boxes');
+        const $result = $('#' + prefix + 'Result');
+        const $name = $('#' + prefix + 'AsName');
+        const $choices = $('#' + prefix + 'Choices');
+        const $capital = $('#' + prefix + 'ChoicesCapital');
+        const $code = $(codeSelector);
+        const $plain = $(plainSelector);
+        const $advanced = $('#' + prefix + 'Advanced');
+        const $toggle = $('#' + prefix + 'AdvancedToggle');
+        const $note = $('#' + prefix + 'AdvancedNote');
+        const $problems = $('#' + prefix + 'Problems');
+        let advancedOpen = false;
+        let triedSaving = false;  // after a Save with problems, they stay shown until fixed (no jumping on blur)
+
+        function type() {
+            return $root.find('input[name="' + prefix + 'Type"]:checked').val() || 'normal';
+        }
+
+        function setType(value) {
+            $('#' + prefix + 'Type-' + value).prop('checked', true);
+        }
+
+        function boxes() {
+            return {
+                type: type(),
+                result: $result.val(),
+                name: $name.val(),
+                choices: Codes.splitChoiceLines($choices.val()),
+                capital: $capital.is(':checked'),
+                advanced: advancedOpen ? $code.val() : ''
+            };
+        }
+
+        function usingAdvanced() {
+            return advancedOpen && !!$code.val().trim();
+        }
+
+        function setAdvanced(open, note) {
+            advancedOpen = open;
+            $advanced.toggle(open);
+            $toggle.attr('aria-expanded', open ? 'true' : 'false');
+            $toggle.find('i').toggleClass('fa-caret-right', !open).toggleClass('fa-caret-down', open);
+            $note.text(note || '').toggle(!!note);
+        }
+
+        function update() {
+            const t = type();
+            $root.find('.box-result').toggle(t !== 'choices');
+            $root.find('.box-name').toggle(t === 'name');
+            $root.find('.box-choices').toggle(t === 'choices');
+            const b = boxes();
+            const code = Codes.boxesToCode(b);
+            const adv = usingAdvanced();
+            $root.toggleClass('advanced-wins', adv);
+            const problems = adv ? [Codes.codeWarning(code)].filter(Boolean) : Codes.boxProblems(b, triedSaving);
+            const typedWrong = !adv && Codes.boxProblems(b, false).length > 0;
+            $('#' + prefix + 'Give').text((!typedWrong && Codes.describeCode(code, $plain.val())) || '\u2013');
+            $('#' + prefix + 'SavedAs').text(code || '\u2013');
+            $problems.text(problems.join('\n'));
+        }
+
+        // The problems that stop saving (shown under the boxes); none means the code can be saved.
+        function check() {
+            const problems = usingAdvanced() ? [] : Codes.boxProblems(boxes(), true);
+            triedSaving = problems.length > 0;
+            if (problems.length) {
+                $problems.text(problems.join('\n'));
+                const t = type();
+                const $first = t === 'choices' ? $choices
+                    : (!$result.val().trim() || /[{},]/.test($result.val()) || t !== 'name') ? $result : $name;
+                $first.focus();
+            }
+            return problems;
+        }
+
+        // Clean the boxes in place (as on leaving them) and give the code to save.
+        function code() {
+            [$result, $name, $code].forEach(($el) => $el.val(cleanResult($el.val())));
+            $choices.val(Codes.cleanChoicesText($choices.val()));
+            update();
+            return Codes.boxesToCode(boxes());
+        }
+
+        function clear() {
+            setType('normal');
+            $result.val('');
+            $name.val('');
+            $choices.val('');
+            $capital.prop('checked', false);
+            $code.val('');
+        }
+
+        // Show a stored code in the boxes; a code they can't show exactly opens Advanced with it.
+        function load(stored) {
+            clear();
+            triedSaving = false;
+            const b = Codes.codeToBoxes(stored || '');
+            if (b.type === 'advanced') {
+                $code.val(b.advanced);
+                setAdvanced(true, 'This entry can\'t be shown with the boxes above (' + b.why +
+                    '), so its code is here. Change it here, or clear it and use the boxes.');
+            } else {
+                setType(b.type);
+                $result.val(b.result);
+                $name.val(b.name);
+                $choices.val(b.choices.join('\n'));
+                $capital.prop('checked', b.capital);
+                setAdvanced(false);
+            }
+            update();
+        }
+
+        function reset() {
+            clear();
+            triedSaving = false;
+            setAdvanced(false);
+            update();
+        }
+
+        $toggle.on('click', function(e) {
+            e.preventDefault();
+            setAdvanced(!advancedOpen);
+            update();
+            if (advancedOpen) $code.focus();
+        });
+        $root.on('change', 'input[type=radio]', function() { triedSaving = false; });
+        $root.on('input change', 'input, textarea', update);
+        $plain.on('input change', update);
+        update();
+
+        return { load: load, reset: reset, check: check, code: code, update: update };
+    }
+
+    let addForm, editForm;
 
     // Add new mapping
     function setupAddMappingForm() {
         $('#mappingForm').on('submit', function(e) {
             e.preventDefault();
             
-            // Convert inputs to lowercase
+            // The house style: plain text without marks, the code from the boxes (or the Advanced box)
             const plainText = cleanPlain($('#plainText').val());
-            const diacriticText = cleanResult($('#diacriticText').val());
-            
-            // Update the input fields with lowercase values
             $('#plainText').val(plainText);
-            $('#diacriticText').val(diacriticText);
+            if (addForm.check().length) return;
+            const diacriticText = addForm.code();
             
             // Disable form during submission
             const $form = $(this);
             const $submitBtn = $form.find('button[type="submit"]');
             const originalBtnText = $submitBtn.html();
             
-            $form.find('input').prop('disabled', true);
+            $form.find('input, textarea').prop('disabled', true);
             $submitBtn.html('<i class="fas fa-spinner fa-spin"></i> Adding...');
             $submitBtn.prop('disabled', true);
             
@@ -205,6 +334,7 @@ const MappingsManager = (function() {
                 success: function(response) {
                     showAlert('Mapping added successfully!');
                     $form[0].reset();
+                    addForm.reset();
                     
                     // Highlight the new row
                     mappingsTable.ajax.reload(function() {
@@ -217,7 +347,7 @@ const MappingsManager = (function() {
                 },
                 complete: function() {
                     // Re-enable form
-                    $form.find('input').prop('disabled', false);
+                    $form.find('input, textarea').prop('disabled', false);
                     $submitBtn.html(originalBtnText);
                     $submitBtn.prop('disabled', false);
                     $('#plainText').focus();
@@ -226,7 +356,7 @@ const MappingsManager = (function() {
         });
         
         // Add input event listeners to convert text to lowercase as user types
-        $('#plainText, #diacriticText').on('input', function() {
+        $('#plainText, #diacriticText, #addResult, #addAsName, #addChoices').on('input', function() {
             const input = $(this);
             const cursorPosition = this.selectionStart;
             const value = input.val();
@@ -244,14 +374,16 @@ const MappingsManager = (function() {
         });
         
         // Also convert on paste events
-        $('#plainText, #diacriticText').on('paste', function() {
+        $('#plainText, #diacriticText, #addResult, #addAsName, #addChoices').on('paste', function() {
             const input = $(this);
             // Use setTimeout to get the value after the paste event completes
             setTimeout(function() {
                 input.val(cleanerFor(input[0])(input.val()));
+                addForm.update();
             }, 0);
         }).on('blur', function() {
             $(this).val(cleanerFor(this)($(this).val()));
+            addForm.update();
         });
     }
     
@@ -299,7 +431,7 @@ const MappingsManager = (function() {
             
             $('#editId').val(id);
             $('#editPlainText').val(row.plain_text.toLowerCase());
-            $('#editDiacriticText').val(row.diacritic_text.toLowerCase());
+            editForm.load(row.diacritic_text.toLowerCase());
             
             $('#editModal').modal('show');
             setTimeout(() => {
@@ -311,13 +443,15 @@ const MappingsManager = (function() {
         $('#saveEdit').on('click', function() {
             const id = $('#editId').val();
             
-            // Convert inputs to lowercase
+            // The house style: plain text without marks, the code from the boxes (or the Advanced box)
             const plainText = cleanPlain($('#editPlainText').val());
-            const diacriticText = cleanResult($('#editDiacriticText').val());
-            
-            // Update the input fields with lowercase values
             $('#editPlainText').val(plainText);
-            $('#editDiacriticText').val(diacriticText);
+            if (!plainText) {
+                $('#editPlainText').focus();
+                return;
+            }
+            if (editForm.check().length) return;
+            const diacriticText = editForm.code();
             
             // Disable button during submission
             const $btn = $(this);
@@ -354,16 +488,16 @@ const MappingsManager = (function() {
             });
         });
         
-        // Handle enter key in edit modal
+        // Handle enter key in edit modal (in the Choices box it starts a new line)
         $('#editForm').on('keypress', function(e) {
-            if (e.which === 13) {
+            if (e.which === 13 && e.target.tagName !== 'TEXTAREA') {
                 e.preventDefault();
                 $('#saveEdit').click();
             }
         });
         
         // Add input event listeners to convert text to lowercase as user types in edit modal
-        $('#editPlainText, #editDiacriticText').on('input', function() {
+        $('#editPlainText, #editDiacriticText, #editResult, #editAsName, #editChoices').on('input', function() {
             const input = $(this);
             const cursorPosition = this.selectionStart;
             const value = input.val();
@@ -381,14 +515,16 @@ const MappingsManager = (function() {
         });
         
         // Also convert on paste events in edit modal
-        $('#editPlainText, #editDiacriticText').on('paste', function() {
+        $('#editPlainText, #editDiacriticText, #editResult, #editAsName, #editChoices').on('paste', function() {
             const input = $(this);
             // Use setTimeout to get the value after the paste event completes
             setTimeout(function() {
                 input.val(cleanerFor(input[0])(input.val()));
+                editForm.update();
             }, 0);
         }).on('blur', function() {
             $(this).val(cleanerFor(this)($(this).val()));
+            editForm.update();
         });
     }
     
@@ -588,6 +724,8 @@ const MappingsManager = (function() {
     // Public methods
     return {
         init: function() {
+            addForm = TypeForm('add', '#diacriticText', '#plainText');
+            editForm = TypeForm('edit', '#editDiacriticText', '#editPlainText');
             initializeTable();
             setupAddMappingForm();
             setupEditMapping();
