@@ -75,6 +75,8 @@ table.words td,table.words th{font-size:18px}
 table.list td{vertical-align:top}
 .extras{margin-top:6px;font-size:16px}
 td.choose{min-width:360px}
+td.acts{min-width:200px}
+td.acts .button,td.acts button{white-space:nowrap}
 td.choose .pick{margin:2px 0 6px}
 .extras label{display:block;margin:3px 0;cursor:pointer}
 ul.cols{columns:3 260px;padding-left:18px;margin:6px 0}
@@ -88,6 +90,8 @@ ul.cols li{break-inside:avoid;margin:2px 0}
 .preview table{width:auto;border:none;background:none;margin:6px 0}
 .preview td{border:none;padding:4px 14px 4px 0;font-size:19px}
 input,textarea,button,select{font-family:inherit}
+input[type=file]{font-size:18px}
+input[type=file]::file-selector-button{font-size:18px;padding:6px 14px;margin-right:10px;cursor:pointer}
 .pager{margin:12px 0}
 .pager a,.pager span{margin-right:12px}
 textarea.try{width:100%;font-size:19px;padding:10px}
@@ -340,7 +344,7 @@ async def _entry_form(request: Request, admin: str, *, entry: dict | None, plain
     delete = ""
     if entry:
         delete = f"""<form method="post" action="/admin/words/delete" style="margin-top:24px"
-onsubmit="return confirm('Delete {_e(entry['plain_text'])} from the list?')">{_hidden(csrf)}
+data-plain="{_e(entry['plain_text'])}" onsubmit="return confirm('Delete ' + this.dataset.plain + ' from the list?')">{_hidden(csrf)}
 <input type="hidden" name="id" value="{entry['id']}">
 <input type="hidden" name="expected_plain" value="{_e(entry['plain_text'])}">
 <input type="hidden" name="expected_result" value="{_e(entry['diacritic_text'])}">
@@ -356,6 +360,10 @@ onsubmit="return confirm('Delete {_e(entry['plain_text'])} from the list?')">{_h
 <div class="form-row"><label class="t" for="plain">Plain word</label>
 <span class="dim">as people type it, without marks (two words or a hyphen are fine, e.g. laddu-s)</span><br>
 <input type="text" id="plain" name="plain" value="{_e(plain)}" required autocomplete="off"></div>
+{'<div class="banner warn">This entry is stored in a special way the boxes below can’t show (for example always '
+  'capital with choices). Change it in the <strong>Stored code</strong> box further down, or empty that box to use '
+  'the boxes instead.</div>' if advanced else ''}
+<div id="simple">
 <div class="form-row types"><span class="t" style="font-weight:600">Type</span>{types}</div>
 <div class="form-row" data-for="normal capital name"><label class="t" for="result">Result</label>
 <span class="dim">the word with its marks</span><br>
@@ -366,10 +374,11 @@ onsubmit="return confirm('Delete {_e(entry['plain_text'])} from the list?')">{_h
 <div class="form-row" data-for="choices"><label class="t" for="choices">Choices</label>
 <span class="dim">one spelling per line; a label in brackets is fine, e.g. nāmāvalī (hindi)</span><br>
 <textarea id="choices" name="choices" rows="4">{_e(chr(10).join(boxes.get('choices') or []))}</textarea></div>
+</div>
 <details{' open' if advanced else ''} class="form-row"><summary>Advanced: stored code</summary>
 <p class="dim">{'This entry is stored in a way the boxes above can’t show, so it is shown here. ' if advanced else ''}When
 this box is filled in, it is saved exactly as written and the boxes above are ignored. Empty it to use the boxes.</p>
-<input type="text" name="advanced" value="{_e(advanced)}" style="width:420px;max-width:100%;font-size:19px"></details>
+<input type="text" id="advanced" name="advanced" value="{_e(advanced)}" style="width:420px;max-width:100%;font-size:19px"></details>
 {preview}
 <p><button name="action" value="preview">Preview</button>
 <button class="primary" name="action" value="save">Save</button></p>
@@ -383,7 +392,9 @@ this box is filled in, it is saved exactly as written and the boxes above are ig
       el.style.display = el.getAttribute('data-for').split(' ').indexOf(t) < 0 ? 'none' : '';
     }});
   }}
-  f.addEventListener('change', show); show();
+  var adv = document.getElementById('advanced'), simple = document.getElementById('simple');
+  function dim(){{ simple.style.opacity = adv.value.trim() ? '0.4' : ''; }}
+  f.addEventListener('change', show); adv.addEventListener('input', dim); show(); dim();
 }})();</script>"""
     return _words_page(request, title, body, email=admin, tab="list", status=status,
                        pending=await _db(wordlist.pending_count))
@@ -615,7 +626,8 @@ async def upload(request: Request):
     made = await _db(make)
     note = (" Not read: " + " ".join(problems)) if problems else ""
     if len(made) == 1:
-        return _back(f"/admin/words/review/{made[0]}", "Here is what was found." + note, "bad" if problems else "ok")
+        return _back(f"/admin/words/review/{made[0]}", "Here is what was found. Rows with an orange edge need a "
+                     "choice." + note, "bad" if problems else "ok")
     return _back("/admin/words/add", f"Made {len(made)} reviews: see Unfinished reviews below." + note,
                  "bad" if problems else "ok")
 
@@ -623,15 +635,15 @@ async def upload(request: Request):
 # ---------- a review ----------
 
 SEEN = {"small": "in small letters",
-        "name": "always with a capital, also mid-sentence: a name or title?",
-        "start": "with a capital only at the start of a sentence"}
+        "name": "with a capital mid-sentence: a name or title?",
+        "start": "with a capital only at a sentence start"}
 
 SECTIONS_DOC = (("clash", "Different from our list"), ("new", "New words"),
                 ("unmarked", "Written without marks in the document"), ("style", "Style only (fixed automatically)"),
                 ("doubtful", "Doubtful (look-alike letters or PDF quirks, not compared)"),
                 ("already", "Already in our list"))
 SECTIONS_LIST = (("lnew", "New"), ("lchanged", "Changed"), ("lmissing", "Missing from your file"),
-                 ("problems", "Problems (rows skipped)"), ("unchanged", "Unchanged"))
+                 ("problems", "Problems (rows skipped)"), ("empty", "Left empty"), ("unchanged", "Unchanged"))
 
 
 def _radios(item: dict, decision: dict, disabled: bool) -> str:
@@ -722,13 +734,14 @@ def _review_sections(rv: dict, disabled: bool) -> str:
     items, dec = rv["items"], rv["decisions"]
     s = items["sections"]
     out = []
+    open_ = not disabled   # a finished review shows its sections closed
 
     def todo(key):
         return sum(1 for i in s.get(key, []) if _todo(i, dec.get(i["id"])))
     if items["kind"] == "document":
         out.append(_section("clash", "Different from our list", s["clash"],
                             "".join(_clash_card(i, dec.get(i["id"]), disabled) for i in s["clash"]),
-                            needs=True, todo=todo("clash"),
+                            needs=open_, todo=todo("clash"),
                             extra='<p class="dim">“The document is right” puts the document\'s spelling in the list '
                                   '(the capital setting stays as it is unless you change it below).</p>'))
         bulk = "" if disabled else (
@@ -738,7 +751,7 @@ def _review_sections(rv: dict, disabled: bool) -> str:
                             '<div class="scroll"><table class="list new"><tr class="head"><th style="width:27%">Word</th>'
                             '<th>Example line</th><th style="width:36%">Choose</th></tr>'
                             + "".join(_new_row(i, dec.get(i["id"]), disabled) for i in s["new"]) + "</table></div>",
-                            needs=True, todo=todo("new"), extra=bulk))
+                            needs=open_, todo=todo("new"), extra=bulk))
         out.append(_section("unmarked", "Written without marks in the document", s["unmarked"],
                             '<div class="scroll"><table class="list"><tr class="head"><th>In the document</th>'
                             '<th>Our list gives</th><th>Example line</th><th>Choose</th></tr>'
@@ -773,7 +786,7 @@ def _review_sections(rv: dict, disabled: bool) -> str:
                                 f'<tr id="{i["id"]}"><td class="big">{_e(i["plain"])}<br><span class="dim">row '
                                 f'{i["row"]}</span></td><td class="big">{_e(harvest.describe(i["result"]))}'
                                 f'{_changed_note(i)}</td><td><div class="pick">{_radios(i, dec.get(i["id"]), disabled)}'
-                                f'</div></td></tr>' for i in s["lnew"]) + "</table></div>", needs=True))
+                                f'</div></td></tr>' for i in s["lnew"]) + "</table></div>", needs=open_))
         out.append(_section("lchanged", "Changed", s["lchanged"],
                             '<div class="scroll"><table class="list"><tr class="head"><th>Plain word</th>'
                             '<th>Our list</th><th>Your file</th><th>Choose</th></tr>' + "".join(
@@ -782,7 +795,7 @@ def _review_sections(rv: dict, disabled: bool) -> str:
                                 f'<td class="big">{_shown(i["entry"])}{_changed_note(i)}</td>'
                                 f'<td class="big">{_e(harvest.describe(i["result"]))}</td>'
                                 f'<td><div class="pick">{_radios(i, dec.get(i["id"]), disabled)}</div></td></tr>'
-                                for i in s["lchanged"]) + "</table></div>", needs=True, todo=todo("lchanged")))
+                                for i in s["lchanged"]) + "</table></div>", needs=open_, todo=todo("lchanged")))
         out.append(_section("lmissing", "Missing from your file", s["lmissing"],
                             '<div class="scroll"><table class="list"><tr class="head"><th>Plain word</th>'
                             '<th>Our list</th><th>Choose</th></tr>' + "".join(
@@ -796,6 +809,12 @@ def _review_sections(rv: dict, disabled: bool) -> str:
                             '<th>Result</th><th>Why</th></tr>' + "".join(
                                 f'<tr><td>{i["row"]}</td><td>{_e(i["plain"])}</td><td>{_e(i["result"])}</td>'
                                 f'<td>{_e(i["why"])}</td></tr>' for i in s["problems"]) + "</table></div>", needs=False))
+        out.append(_section("empty", "Left empty", s.get("empty", []),
+                            '<p class="dim">These rows have a plain word but no result (for example words the team '
+                            'hasn\'t answered yet). They are left out; pending words stay pending.</p>'
+                            '<ul class="cols">' + "".join(f'<li>{_e(i["plain"])} <span class="dim">(row {i["row"]})'
+                                                         f'</span></li>' for i in s.get("empty", [])) + "</ul>",
+                            needs=False))
         out.append(_section("unchanged", "Unchanged", s["unchanged"],
                             '<ul class="cols">' + "".join(f'<li>{_e(i["plain"])}</li>' for i in s["unchanged"])
                             + "</ul>", needs=False))
@@ -1019,9 +1038,9 @@ async def pending_page(request: Request):
 <td data-label="Suggested" class="big">{_shown(i['suggested'])}</td>
 <td data-label="Why">{_e(i['reason'])}<br><span class="dim">{_e(i['source'])}{(' · page ' + _e(i['page'])) if i['page'] and not i['page'].startswith('row') else (' · ' + _e(i['page'])) if i['page'] else ''}</span>
 {f'<div class="line">{_e(i["context"])}</div>' if i['context'] else ''}</td>
-<td style="white-space:nowrap"><a class="button" href="/admin/words/new?pending={i['id']}">{'Change in the list' if i['plain_text'] in in_list else 'Add to the list'}</a>
-<form class="inline" method="post" action="/admin/words/pending/{i['id']}/remove">{_hidden(csrf)}
-<button style="margin-top:6px">Remove from pending</button></form></td></tr>""" for i in items)
+<td class="acts"><a class="button" href="/admin/words/new?pending={i['id']}">{'Change in the list' if i['plain_text'] in in_list else 'Add to the list'}</a>
+<form method="post" action="/admin/words/pending/{i['id']}/remove" style="margin:8px 0 0">{_hidden(csrf)}
+<button>Remove from pending</button></form></td></tr>""" for i in items)
     done_rows = "".join(
         f'<tr><td class="big">{_e(i["plain_text"])}</td><td>{_shown(i["suggested"])}</td>'
         f'<td>{_e(i["resolution"])}</td><td>{_fmt_time(i["resolved_at"])}<br><span class="dim">{_e(i["resolved_by"])}'
@@ -1032,12 +1051,13 @@ async def pending_page(request: Request):
 <p class="dim">The download has an empty “Team's answer” column. When the team has filled it in, upload the sheet on
 <a href="/admin/words/add">Add words</a>: it is read as a word list, and when you accept that review the answered
 words leave this list. Rows left empty stay pending.</p>
-<div class="scroll"><table class="list"><tr class="head"><th>Plain word</th><th>Suggested</th><th>Why</th><th></th></tr>
+<div class="scroll"><table class="list"><tr class="head"><th style="width:16%">Plain word</th>
+<th style="width:22%">Suggested</th><th>Why</th><th style="width:210px"></th></tr>
 {rows or '<tr><td colspan="4" class="dim">Nothing is pending.</td></tr>'}</table></div>
 <details><summary>Recently resolved ({len(done)})</summary><div class="scroll"><table class="list">
 <tr class="head"><th>Plain word</th><th>Suggested</th><th>How</th><th>When</th></tr>
 {done_rows or '<tr><td colspan="4" class="dim">None yet.</td></tr>'}</table></div></details>"""
-    return _words_page(request, "Pending", body, email=admin, tab="pending", pending=len(items))
+    return _words_page(request, "Pending", body, email=admin, tab="pending", pending=len(items), wide=True)
 
 
 @router.get("/admin/words/pending.xlsx")

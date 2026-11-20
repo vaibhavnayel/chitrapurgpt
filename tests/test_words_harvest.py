@@ -297,6 +297,7 @@ def test_plan_from_choices():
         ("krshna", "{{}}{{kṛs͟hṇa}}", "{{}}{{kṛshṇa}}"), ("atma", "ātmā", "{{}}{{ātmā}}")}
     assert {(c["plain"], c["result"]) for c in p["add"]} == {("akarta", "{{}}{{akartā}}"), ("dipa", "dīpa")}
     assert sorted(x["plain"] for x in p["pending"]) == ["abhokta", "chitrapur", "kshama yachana"]
+    assert {x["plain"]: x["suggested"] for x in p["pending"]}["kshama yachana"] == "kshamā yāchanā"
     assert all(x["source"] == "talk.docx" and x["context"] for x in p["pending"])
     assert harvest.plan_sentence(p) == "Accept will add 2 words, change 2, and put 3 on the pending list."
     assert harvest.plan_sentence(p, done=True).startswith("Accepted: added 2 words")

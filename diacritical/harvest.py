@@ -259,6 +259,9 @@ def code_problem(code: str) -> str | None:
     return None
 
 
+NO_RESULT = "no result (left empty)"
+
+
 def clean_list_rows(raw: list[tuple[int, str, str]]) -> tuple[list[dict], list[dict]]:
     """Rows of an offline list in the house style, and the rows skipped (with why). A plain word given twice keeps its
     first row."""
@@ -271,7 +274,7 @@ def clean_list_rows(raw: list[tuple[int, str, str]]) -> tuple[list[dict], list[d
         if not plain:
             why = "no plain word"
         elif not result:
-            why = "no result (left empty)"
+            why = NO_RESULT
         elif not re.fullmatch(r"[a-z0-9' \-]+", plain):
             why = "the plain word has letters our list can't use"
         elif code_problem(result):
@@ -592,7 +595,7 @@ def suggestions(plain: str, result: str, mappings: dict[str, str]) -> list[dict]
 
 def _number(sections: dict) -> None:
     prefix = {"clash": "c", "new": "n", "unmarked": "u", "style": "s", "doubtful": "d", "already": "a",
-              "lnew": "ln", "lchanged": "lc", "lmissing": "lm", "problems": "p", "unchanged": "lu"}
+              "lnew": "ln", "lchanged": "lc", "lmissing": "lm", "problems": "p", "empty": "le", "unchanged": "lu"}
     for name, items in sections.items():
         for i, item in enumerate(items, 1):
             item["id"] = f"{prefix[name]}{i}"
@@ -618,8 +621,9 @@ def review_list(rows: list[dict], problems: list[dict], mappings: dict[str, str]
     whole = len(in_file & set(mappings)) >= 0.5 * max(1, len(mappings))
     missing = [{"kind": "lmissing", "plain": k, "entry": v} for k, v in sorted(mappings.items())
                if k not in in_file] if whole else []
-    sections = {"lnew": new, "lchanged": changed, "lmissing": missing, "problems": list(problems),
-                "unchanged": unchanged}
+    empty = [p for p in problems if p["why"] == NO_RESULT]   # e.g. pending words the team hasn't answered yet
+    sections = {"lnew": new, "lchanged": changed, "lmissing": missing,
+                "problems": [p for p in problems if p["why"] != NO_RESULT], "empty": empty, "unchanged": unchanged}
     _number(sections)
     return {"kind": "list", "sections": sections, "counts": {k: len(v) for k, v in sections.items()},
             "whole_list": whole, "rows": len(rows)}
@@ -732,8 +736,9 @@ def plan(review: dict, decisions: dict, source: str = "") -> dict:
         choice, cap = d.get("choice"), d.get("cap", "keep")
         entry = item.get("entry")
         if choice == "pending":
-            spellings = ", ".join(item["options"])
-            pend(item, item["options"][0] if len(item["options"]) == 1 else spellings,
+            # suggested: the document's spelling, in the entry's own form (as "The document is right" would store it)
+            pend(item, with_type(replace_result(entry, item["options"][0], item.get("capitalised", False)), cap)
+                 if entry else item["options"][0],
                  f"Different from our list: the document has {', '.join(f['form'] for f in item['forms'] if f['status'] == 'differs')}; "
                  f"our list gives {item['gives']}")
         elif choice == "list" and entry is not None:
@@ -819,7 +824,8 @@ def plan_sentence(p: dict, done: bool = False) -> str:
         parts.append(f"{verbs[3]} {len(p['pending'])} on the pending list")
     if not parts:
         return "Accepted: nothing in the list changed." if done else "Accept will change nothing in the list."
-    joined = ", ".join(parts[:-1]) + ", and " + parts[-1] if len(parts) > 1 else parts[0]
+    joined = parts[0] if len(parts) == 1 else " and ".join(parts) if len(parts) == 2 else \
+        ", ".join(parts[:-1]) + ", and " + parts[-1]
     return ("Accepted: " if done else "Accept will ") + joined + "."
 
 
@@ -1018,6 +1024,7 @@ def report_xlsx(review: dict, decisions: dict, info: dict) -> bytes:
         what = [("New", "lnew", "In the file, not in our list"), ("Changed", "lchanged", "In both, with a different result"),
                 ("Missing from the file", "lmissing", "In our list, not in the file (kept unless Delete was chosen)"),
                 ("Problems", "problems", "Rows of the file that were skipped"),
+                ("Left empty", "empty", "Rows with a plain word but no result (e.g. not answered yet): left out"),
                 ("Unchanged", "unchanged", "The same in the file and in our list")]
     for label, key, meaning in what:
         lines.append([label, len(s.get(key, [])), meaning])
@@ -1085,7 +1092,9 @@ def report_xlsx(review: dict, decisions: dict, info: dict) -> bytes:
                [[i["plain"], describe(i["entry"]), _label(i, dec(i))] for i in s["lmissing"]], [20, 30, 14])
         _sheet(wb, "4 Problems", "Rows of the file that were skipped.", ["Row", "Plain word", "Result", "Why"],
                [[i["row"], i["plain"], i["result"], i["why"]] for i in s["problems"]], [7, 20, 26, 50])
-        _sheet(wb, "5 Unchanged", "The same in the file and in our list.", ["Plain word", "Result"],
+        _sheet(wb, "5 Left empty", "Rows with a plain word but no result (e.g. not answered yet): left out.",
+               ["Row", "Plain word"], [[i["row"], i["plain"]] for i in s.get("empty", [])], [7, 24])
+        _sheet(wb, "6 Unchanged", "The same in the file and in our list.", ["Plain word", "Result"],
                [[i["plain"], i["result"]] for i in s["unchanged"]], [20, 30])
     return _save(wb)
 
