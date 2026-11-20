@@ -1108,12 +1108,15 @@ async def history(request: Request):
         n = b["adds"] + b["updates"] + b["deletes"]
         undo = ""
         if b["undone_at"]:
-            undo = f'<span class="tag off">Undone</span><br><span class="dim">{_fmt_time(b["undone_at"])}</span>'
+            undo = (f'<span class="tag off">Undone</span><br><span class="dim" style="white-space:nowrap">'
+                    f'{_fmt_time(b["undone_at"])}</span>')
         elif n and b["kind"] not in ("undo", "reset") and b["id"] > last_reset:
             undo = (f'<form class="inline" method="post" action="/admin/words/history/{b["id"]}/undo" '
-                    f'onsubmit="return confirm(\'Undo this change? The words go back to how they were before it.\')">'
+                    f'onsubmit="return confirm(\'Undo this change? The words go back to how they were before it. '
+                    f'(The pending list stays as it is.)\')">'
                     f'{_hidden(csrf)}<button>Undo</button></form>')
-        return (f'<tr{" class=off" if b["undone_at"] else ""}><td data-label="When">{_fmt_time(b["created_at"])}<br>'
+        return (f'<tr{" class=off" if b["undone_at"] else ""}><td data-label="When" style="white-space:nowrap">'
+                f'{_fmt_time(b["created_at"])}<br>'
                 f'<span class="dim">{_e(b["created_by"])}</span></td>'
                 f'<td><span class="tag admin">{_e(KINDS.get(b["kind"], b["kind"]))}</span> {_e(b["summary"])}<br>'
                 + (f'<a href="/admin/words/history/{b["id"]}">{_e(what(b))}</a>' if n else "")
@@ -1121,7 +1124,7 @@ async def history(request: Request):
                 + f'</td><td>{undo}</td></tr>')
     body = f"""<h1>History</h1>
 <p>Every change to the list made here, newest first. Undo puts the words back as they were before that change
-(it can't if they were changed again since).</p>
+(it can't if they were changed again since). The pending list isn't changed by Undo.</p>
 <div class="scroll"><table class="list"><tr class="head"><th>When</th><th>What</th><th></th></tr>
 {''.join(row(b) for b in rows) or '<tr><td colspan="3" class="dim">No changes yet.</td></tr>'}</table></div>"""
     return _words_page(request, "History", body, email=admin, tab="history", pending=pending)
