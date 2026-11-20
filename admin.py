@@ -161,7 +161,7 @@ def _page(title: str, body: str, *, email: str | None = None, flash: str = "", f
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex">
 <title>{_e(title)} · ChitrapurGPT admin</title><style>{CSS}</style></head><body>
 <header><span class="title"><a href="/admin" style="text-decoration:none">ChitrapurGPT admin</a></span>
-{'<nav><a href="/admin">People</a><a href="/admin/kb">Collections &amp; uploads</a></nav>' if email else ''}
+{'<nav><a href="/admin">People</a><a href="/admin/kb">Collections &amp; uploads</a><a href="/admin/words">Diacritical words</a></nav>' if email else ''}
 <span>{who} &nbsp; <a href="/">Open ChitrapurGPT</a></span></header>
 <main{' class="wide"' if wide else ''}>
 {f'<div class="banner warn">{warning}</div>' if banner else ''}
@@ -445,13 +445,18 @@ async def remove(request: Request):
 
 
 def install(app):
-    """Add the /admin pages (and admin_kb.py's collections and uploads) to Chainlit's FastAPI app, ahead of
-    Chainlit's catch-all UI route."""
+    """Add the /admin pages (and admin_kb.py's collections and uploads, admin_words.py's Diacritical word list) to
+    Chainlit's FastAPI app, ahead of Chainlit's catch-all UI route."""
     import admin_kb
     import admin_sources
     before = list(app.router.routes)
     app.include_router(router)
     app.include_router(admin_kb.router)
     app.include_router(admin_sources.router)
+    try:
+        import admin_words
+        app.include_router(admin_words.router)
+    except Exception:  # noqa: BLE001  (the word list pages never stop the rest of the admin from working)
+        logger.exception("Couldn't load the Diacritical words pages (admin_words.py)")
     added = [r for r in app.router.routes if r not in before]
     app.router.routes[:] = added + before
