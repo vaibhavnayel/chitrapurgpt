@@ -1,5 +1,7 @@
-"""The Diacritical words dashboard's database layer (diacritical/wordlist.py): the trial copy, Accept (changes, log,
-pending, auto-resolve), the snapshot check, undo and its refusal, starting the trial again, live mode.
+"""The Diacritical words dashboard's database layer (diacritical/wordlist.py): the trial copy, decisions read from a
+filled report and applied in one transaction (changes, log, pending with notes, auto-resolve), rows skipped because the
+list changed meanwhile, the confirm page's fingerprint, already-applied and trial/live refusals, the pending list round
+trip, undo and its refusal, starting the trial again, live mode.
 
 Needs a local Postgres: each test makes its own throwaway database on it and drops it afterwards.
   WORDS_TEST_DATABASE_URL=postgresql://postgres@localhost:5433/postgres .venv/bin/python -m pytest tests/test_words_db.py -q
@@ -13,18 +15,22 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 BASE = os.environ.get("WORDS_TEST_DATABASE_URL", "")
 pytestmark = pytest.mark.skipif(not BASE, reason="WORDS_TEST_DATABASE_URL (a local Postgres) not set")
 
 import psycopg  # noqa: E402
 
-from diacritical import harvest, wordlist  # noqa: E402
+from diacritical import harvest, sheets, wordlist  # noqa: E402
+from test_words_harvest import fill  # noqa: E402
 
 LIVE = [("krishna", "kṛs͟hṇa"), ("krshna", "{{}}{{kṛs͟hṇa}}"), ("atma", "ātmā"), ("god", "{{gŏḍ}}{{god}}"),
         ("chitrapur", "{{}}{{chitrāpur}}"), ("puja", "pūjā"), ("shri", "shrī")]
 TEXT = ("Shrī Kṛshṇa came to Chitrapur. The Ātma is one.\n"
         "We offered pūjā with the dīpa to Gaṇesha and Akartā.\n")
+BY = "a@gmail.com"
+DIFF, NEW, UNMARKED = "Different from our list", "New words", "Written without marks"
 
 
 def with_db(url: str, name: str) -> str:
@@ -70,34 +76,52 @@ def live_rows(url):
         return dict(c.execute("SELECT plain_text, diacritic_text FROM diacritic_mappings").fetchall())
 
 
-def make_review(conn, name, text=TEXT):
-    items = harvest.review_document([("talk.docx", [(None, text)])], wordlist.mappings(conn, name))
-    return wordlist.create_review(conn, name, "document", "talk.docx", [{"name": "talk.docx"}], "a@gmail.com", items)
+def words():
+    return {r["plain_text"]: r["diacritic_text"] for r in run(wordlist.entries)}
 
 
-def decide(rid, choices):
-    """choices: {plain word: decision}; every other row that needs a choice is skipped / our list."""
+def set_word(url, table, plain, result):
+    """A change made elsewhere (e.g. on the old Mappings page), straight in the table."""
+    with psycopg.connect(url) as c:
+        if result is None:
+            c.execute(f"DELETE FROM {table} WHERE plain_text = %s", (plain,))
+        elif c.execute(f"UPDATE {table} SET diacritic_text = %s WHERE plain_text = %s", (result, plain)).rowcount == 0:
+            c.execute(f"INSERT INTO {table} (plain_text, diacritic_text) VALUES (%s, %s)", (plain, result))
+
+
+def make_review(text=TEXT):
+    def go(conn, name):
+        items = harvest.review_document([("talk.docx", [(None, text)])], wordlist.mappings(conn, name))
+        return wordlist.create_review(conn, name, "document", "talk.docx", [{"name": "talk.docx"}], BY, items)
+    return run(go)
+
+
+def report(rid) -> bytes:
     def go(conn, name):
         rv = wordlist.get_review(conn, name, rid)
-        d = rv["decisions"]
-        for section in rv["items"]["sections"].values():
-            for item in section:
-                if item.get("kind") not in harvest.NEEDS_CHOICE:
-                    if item["plain"] in choices and item.get("kind") == "unmarked":
-                        d[item["id"]] = choices[item["plain"]]
-                    continue
-                default = {"choice": "skip" if item["kind"] == "new" else "list", "cap": d[item["id"]].get("cap")}
-                d[item["id"]] = choices.get(item["plain"], default)
-        wordlist.save_decisions(conn, name, rid, d)
-    run(go)
+        return sheets.report_xlsx(rv["items"], {"review": rid, "list": rv["list_name"], "files": ["talk.docx"],
+                                                "made_iso": rv["created_at"].isoformat(timespec="seconds")})
+    return run(go)
+
+
+def upload(rid, answers, data=None) -> dict:
+    """Fill the report like a person, upload it; returns what the confirm page would show."""
+    filled = sheets.read_filled("filled.xlsx", fill(data or report(rid), answers))
+    run(lambda c, n: wordlist.store_report_answers(c, n, filled, BY, "filled.xlsx"))
+    return run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, rid)))
+
+
+def apply(rid, p, by=BY):
+    return run(lambda c, n: wordlist.apply(c, n, rid, by, p["fingerprint"]))
 
 
 def test_trial_copy_is_made_once_with_its_own_ids(db):
     rows = run(wordlist.entries)
     assert [(r["id"], r["plain_text"]) for r in rows][:2] == [(30, "atma"), (50, "chitrapur")]
     assert len(rows) == len(LIVE)
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="dipa", result="dīpa"))
-    new = run(lambda c, n: wordlist.entry_by_plain(c, n, "dipa"))
+    rid = make_review()
+    apply(rid, upload(rid, {(NEW, "dipa"): {"Your decision": "Add"}}))
+    new = [r for r in run(wordlist.entries) if r["plain_text"] == "dipa"][0]
     assert new["id"] == 71                                                    # the sequence was set past the copy
     assert "dipa" not in live_rows(db)                                         # the real list is untouched
     wordlist._ready.clear()
@@ -106,112 +130,147 @@ def test_trial_copy_is_made_once_with_its_own_ids(db):
         assert c.execute("SELECT count(*) FROM diacritic_mapping_changes").fetchone()[0] == 0
 
 
-def test_accept_applies_logs_and_fills_pending(db):
-    def setup(conn, name):
-        conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason) "
-                     "VALUES ('trial', 'akarta', 'akartā', 'asked before')")
-        return make_review(conn, name)
-    rid = run(setup)
-    decide(rid, {"krshna": {"choice": "doc:0", "cap": "keep"},          # the document is right
-                 "atma": {"choice": "list", "cap": "capital"},          # our list, always capital
-                 "akarta": {"choice": "add:0", "cap": "capital"},
-                 "dipa": {"choice": "add:0", "cap": "normal"},
-                 "ganesha": {"choice": "pending", "cap": "capital"},
-                 "chitrapur": {"choice": "pending"}})
-    done = run(lambda c, n: wordlist.accept_review(c, n, rid, "a@gmail.com"))
-    assert harvest.plan_sentence(done["plan"]) == "Accept will add 2 words, change 2, and put 2 on the pending list."
-    words = {r["plain_text"]: r["diacritic_text"] for r in run(wordlist.entries)}
-    assert words["krshna"] == "{{}}{{kṛshṇa}}" and words["atma"] == "{{}}{{ātmā}}"
-    assert words["akarta"] == "{{}}{{akartā}}" and words["dipa"] == "dīpa"
+def test_apply_from_a_filled_report(db):
+    run(lambda c, n: c.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason) "
+                               "VALUES ('trial', 'akarta', 'akartā', 'asked before')"))
+    rid = make_review()
+    p = upload(rid, {(DIFF, "krshna"): {"Your decision": "Document is right"},
+                     (DIFF, "atma"): {"Your decision": "Our list is right", "Capital": "Always capital"},
+                     (NEW, "akarta"): {"Your decision": "Add", "Capital": "Always capital"},
+                     (NEW, "dipa"): {"Your decision": "Add"},
+                     (NEW, "ganesha"): {"Notes": "ask the team"},                 # blank: pending, with the note
+                     (UNMARKED, "chitrapur"): {"Your decision": "Pending"}})
+    assert sheets.sentence(p) == ("This will add 2 words, change 2, put 2 on the pending list, and take 1 off the "
+                                  "pending list.")                             # akarta: it is added
+    done = apply(rid, p)
+    assert sheets.sentence(done["plan"], done=True).startswith("Applied: added 2 words, changed 2, put 2")
+    w = words()
+    assert w["krshna"] == "{{}}{{kṛshṇa}}" and w["atma"] == "{{}}{{ātmā}}"
+    assert w["akarta"] == "{{}}{{akartā}}" and w["dipa"] == "dīpa"
     assert live_rows(db)["krshna"] == "{{}}{{kṛs͟hṇa}}"                       # trial only
     batch = run(lambda c, n: wordlist.get_batch(c, n, done["batch"]))
-    assert batch["kind"] == "review" and batch["review_id"] == rid and "2 added, 2 changed" in batch["summary"]
+    assert batch["kind"] == "review" and batch["review_id"] == rid
+    assert batch["summary"] == f"Report {rid} (talk.docx): 2 added, 2 changed, 2 put on the pending list"
     log = run(lambda c, n: wordlist.changes(c, done["batch"]))
     assert sorted((x["op"], x["new_plain"] or x["old_plain"]) for x in log) == [
         ("add", "akarta"), ("add", "dipa"), ("update", "atma"), ("update", "krshna")]
     assert [x["old_result"] for x in log if x["new_plain"] == "krshna"] == ["{{}}{{kṛs͟hṇa}}"]
     pending = {p["plain_text"]: p for p in run(wordlist.pending)}
     assert set(pending) == {"ganesha", "chitrapur"}
-    assert pending["ganesha"]["suggested"] == "{{}}{{gaṇesha}}" and pending["ganesha"]["source"].startswith("talk.docx")
-    assert "Akartā" in pending["ganesha"]["context"] or pending["ganesha"]["context"]
+    assert pending["ganesha"]["suggested"] == "{{}}{{gaṇesha}}" and pending["ganesha"]["notes"] == "ask the team"
+    assert pending["ganesha"]["source"] == f"talk.docx (upload {rid})" and pending["ganesha"]["context"]
     resolved = run(lambda c, n: wordlist.pending(c, n, resolved=True))
-    assert [(r["plain_text"], r["resolution"]) for r in resolved] == [("akarta", f"added or changed in review {rid}")]
+    assert [(r["plain_text"], r["resolution"]) for r in resolved] == [
+        ("akarta", f"added or changed from report {rid} (change {done['batch']})")]
     rv = run(lambda c, n: wordlist.get_review(c, n, rid))
-    assert rv["status"] == "accepted" and rv["batch_id"] == done["batch"]
-    with pytest.raises(wordlist.WordListError, match="already finished"):
-        run(lambda c, n: wordlist.accept_review(c, n, rid, "a@gmail.com"))
+    assert rv["status"] == "applied" and rv["batch_id"] == done["batch"]
+    with pytest.raises(wordlist.WordListError, match="already applied on"):
+        upload(rid, {})
+    with pytest.raises(wordlist.WordListError, match="nothing waiting"):
+        apply(rid, p)
 
 
-def test_accept_refuses_when_words_changed_meanwhile(db):
-    rid = run(make_review)
-    decide(rid, {"krshna": {"choice": "doc:0", "cap": "keep"}, "dipa": {"choice": "add:0", "cap": "normal"}})
-    run(lambda c, n: wordlist.save_entry(c, n, "b@gmail.com", plain="krshna", result="kṛṣṇa",
-                                         entry_id=wordlist.entry_by_plain(c, n, "krshna")["id"]))
-    run(lambda c, n: wordlist.save_entry(c, n, "b@gmail.com", plain="dipa", result="dīpā"))
-    with pytest.raises(wordlist.Conflict) as caught:
-        run(lambda c, n: wordlist.accept_review(c, n, rid, "a@gmail.com"))
-    assert sorted(caught.value.words) == [("dipa", "dīpā"), ("krshna", "kṛṣṇa")]
-    words = {r["plain_text"]: r["diacritic_text"] for r in run(wordlist.entries)}
-    assert words["krshna"] == "kṛṣṇa" and words["dipa"] == "dīpā"            # nothing was overwritten
-    assert run(lambda c, n: wordlist.get_review(c, n, rid))["status"] == "open"
-    run(lambda c, n: wordlist.refresh_review(c, n, rid, caught.value.words))
+def test_rows_changed_meanwhile_are_skipped_and_the_fingerprint_guards_apply(db):
+    rid = make_review()
+    answers = {(DIFF, "krshna"): {"Your decision": "Document is right"}, (NEW, "dipa"): {"Your decision": "Add"},
+               (NEW, "akarta"): {"Your decision": "Add"}}
+    set_word(db, "diacritic_mappings_trial", "krshna", "kṛṣṇa")                # changed since the report was made
+    set_word(db, "diacritic_mappings_trial", "dipa", "dīpā")
+    p = upload(rid, answers)
+    assert sorted((x["plain"], x["then"], x["now"]) for x in p["skipped"]) == [
+        ("dipa", None, "dīpā"), ("krshna", "{{}}{{kṛs͟hṇa}}", "kṛṣṇa")]
+    assert [c["plain"] for c in p["add"]] == ["akarta"] and p["update"] == []
+    set_word(db, "diacritic_mappings_trial", "akarta", "akartā")               # and once more after the page
+    with pytest.raises(wordlist.Changed):
+        apply(rid, p)
+    assert words()["krshna"] == "kṛṣṇa" and run(lambda c, n: wordlist.get_review(c, n, rid))["status"] == "open"
+    p = run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, rid)))
+    apply(rid, p)                                                              # nothing left to change
+    assert words()["akarta"] == "akartā" and words()["krshna"] == "kṛṣṇa"
+
+
+def test_cancel_and_upload_again(db):
+    rid = make_review()
+    upload(rid, {(NEW, "dipa"): {"Your decision": "Add"}})
+    run(lambda c, n: wordlist.cancel(c, n, rid))
     rv = run(lambda c, n: wordlist.get_review(c, n, rid))
-    items = {i["plain"]: i for sec in rv["items"]["sections"].values() for i in sec if "kind" in i}
-    assert items["krshna"]["entry"] == "kṛṣṇa" and items["krshna"]["changed_meanwhile"] == "kṛṣṇa"
-    assert "choice" not in rv["decisions"][items["krshna"]["id"]]
-    assert [v for v, _ in harvest.choice_options(items["dipa"])] == ["pending", "skip"]
-    assert set(harvest.undecided(rv["items"], rv["decisions"])) == {items["krshna"]["id"], items["dipa"]["id"]}
+    assert rv["status"] == "open" and rv["decisions"] == {}
+    p = upload(rid, {(NEW, "dipa"): {"Your decision": "Skip"}})                 # a new upload replaces them
+    assert p["add"] == []
 
 
 def test_undo_and_its_refusal(db):
-    rid = run(make_review)
-    decide(rid, {"krshna": {"choice": "doc:0", "cap": "keep"}, "dipa": {"choice": "add:0", "cap": "normal"},
-                 "akarta": {"choice": "add:0", "cap": "normal"}})
-    first = run(lambda c, n: wordlist.accept_review(c, n, rid, "a@gmail.com"))["batch"]
-    before = {r["plain_text"]: r["diacritic_text"] for r in run(wordlist.entries)}
+    rid = make_review()
+    first = apply(rid, upload(rid, {(DIFF, "krshna"): {"Your decision": "Document is right"},
+                                    (NEW, "dipa"): {"Your decision": "Add"},
+                                    (NEW, "akarta"): {"Your decision": "Add"}}))["batch"]
+    assert [x["plain_text"] for x in run(wordlist.pending)] == ["atma", "ganesha"]       # the blank rows
     undo = run(lambda c, n: wordlist.undo(c, n, first, "b@gmail.com"))
     after = {r["plain_text"]: (r["id"], r["diacritic_text"]) for r in run(wordlist.entries)}
     assert {k: v for k, (_, v) in after.items()} == dict(LIVE) and after["krshna"][0] == 20
-    assert set(before) - set(after) == {"dipa", "akarta"}
+    assert [x["plain_text"] for x in run(wordlist.pending)] == ["atma", "ganesha"]       # put on pending: they stay
     b = run(lambda c, n: wordlist.get_batch(c, n, first))
     assert b["undone_by"] == "b@gmail.com" and run(lambda c, n: wordlist.get_batch(c, n, undo))["kind"] == "undo"
+    assert run(lambda c, n: wordlist.get_review(c, n, rid))["status"] == "undone"
+    with pytest.raises(wordlist.WordListError, match=r"already applied on .* \(and undone on"):
+        upload(rid, {})
     with pytest.raises(wordlist.WordListError, match="already undone"):
-        run(lambda c, n: wordlist.undo(c, n, first, "a@gmail.com"))
+        run(lambda c, n: wordlist.undo(c, n, first, BY))
     with pytest.raises(wordlist.WordListError, match="can't be undone"):
-        run(lambda c, n: wordlist.undo(c, n, undo, "a@gmail.com"))
+        run(lambda c, n: wordlist.undo(c, n, undo, BY))
 
-    # a deleted entry comes back with its own id; a word changed again later blocks the undo
-    gid = run(lambda c, n: wordlist.entry_by_plain(c, n, "god"))["id"]
-    deleted = run(lambda c, n: wordlist.delete_entry(c, n, "a@gmail.com", gid, ("god", "{{gŏḍ}}{{god}}")))
-    edit = run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="puja", result="pūja",
-                                                entry_id=wordlist.entry_by_plain(c, n, "puja")["id"]))
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="puja", result="pūjā-pūjā",
-                                         entry_id=wordlist.entry_by_plain(c, n, "puja")["id"],
-                                         expected=("puja", "pūja")))
-    with pytest.raises(wordlist.WordListError, match="changed again after this.*puja"):
-        run(lambda c, n: wordlist.undo(c, n, edit, "a@gmail.com"))
-    run(lambda c, n: wordlist.undo(c, n, deleted, "a@gmail.com"))
-    assert run(lambda c, n: wordlist.entry(c, n, gid))["plain_text"] == "god"
-    with pytest.raises(wordlist.Conflict):                                   # the form showed an older value
-        run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="puja", result="x",
-                                             entry_id=wordlist.entry_by_plain(c, n, "puja")["id"],
-                                             expected=("puja", "pūja")))
-    with pytest.raises(wordlist.WordListError, match="already in the list"):
-        run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="god", result="x"))
+    # a word changed again by a later batch blocks the undo of the earlier one
+    r2 = make_review()
+    second = apply(r2, upload(r2, {(DIFF, "atma"): {"Your decision": "Our list is right",
+                                                    "Capital": "Always capital"}}))
+    r3 = make_review("The Ātma is one.\n")
+    apply(r3, upload(r3, {(DIFF, "atma"): {"Your decision": "Document is right"}}))
+    assert words()["atma"] == "{{}}{{ātma}}"
+    with pytest.raises(wordlist.WordListError, match="changed again after this.*atma"):
+        run(lambda c, n: wordlist.undo(c, n, second["batch"], BY))
 
 
-def test_saving_from_pending_resolves_it(db):
+def pending_file(answers) -> dict:
+    def go(conn, name):
+        return sheets.pending_xlsx(wordlist.pending(conn, name), wordlist.mappings(conn, name),
+                                   {"list": name, "when": str})
+    return sheets.read_filled("pending.xlsx", fill(run(go), answers))
+
+
+def test_the_pending_list_round_trip(db):
     def setup(conn, name):
-        return conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason) "
-                            "VALUES ('trial', 'ganesha', 'gaṇesha', 'New word') RETURNING id").fetchone()["id"]
-    pid = run(setup)
-    batch = run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="ganesha", result="{{}}{{gaṇesha}}",
-                                                 pending_id=pid))
-    assert run(lambda c, n: wordlist.get_batch(c, n, batch))["kind"] == "pending"
-    assert run(wordlist.pending) == []
-    pid2 = run(setup)
-    assert run(lambda c, n: wordlist.remove_pending(c, n, pid2, "a@gmail.com")) == "ganesha"
-    assert run(lambda c, n: wordlist.pending(c, n, resolved=True))[0]["resolution"] == "removed"
+        for plain, sug in (("ganesha", "{{}}{{gaṇesha}}"), ("dipa", "dīpa"), ("seva", "sevā"), ("krshna", "kṛṣṇa")):
+            conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason) VALUES "
+                         "('trial', %s, %s, 'asked')", (plain, sug))
+    run(setup)
+    filled = pending_file({("Pending", "ganesha"): {"Your decision": "Add"},
+                           ("Pending", "dipa"): {"Your decision": "Add", "Result": "Dīpā"},
+                           ("Pending", "seva"): {"Your decision": "Remove from pending"},
+                           ("Pending", "krshna"): {"Notes": "the team is checking"}})
+    pid = run(lambda c, n: wordlist.store_pending_answers(c, n, filled, BY, "pending.xlsx"))
+    p = run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, pid)))
+    assert sheets.sentence(p) == "This will add 2 words and take 3 off the pending list."
+    done = apply(pid, p)
+    assert words()["ganesha"] == "{{}}{{gaṇesha}}" and words()["dipa"] == "dīpā"
+    left = run(wordlist.pending)
+    assert [(x["plain_text"], x["notes"]) for x in left] == [("krshna", "the team is checking")]
+    how = {x["plain_text"]: x["resolution"] for x in run(lambda c, n: wordlist.pending(c, n, resolved=True))}
+    assert how["seva"] == "removed" and how["dipa"].startswith("added or changed from the pending list")
+    assert run(lambda c, n: wordlist.get_batch(c, n, done["batch"]))["kind"] == "pending"
+    run(lambda c, n: wordlist.undo(c, n, done["batch"], BY))       # the words go, and their questions come back
+    assert "dipa" not in words() and "ganesha" not in words()
+    assert sorted(x["plain_text"] for x in run(wordlist.pending)) == ["dipa", "ganesha", "krshna", "seva"]
+
+
+def test_trial_and_real_files_never_mix(db, monkeypatch):
+    rid = make_review()
+    data = report(rid)
+    monkeypatch.setenv("DIACRITICAL_WORDS_LIST", "live")
+    with pytest.raises(wordlist.WordListError, match="made on the trial copy"):
+        upload(rid, {}, data=data)
+    filled = sheets.read_filled("p.xlsx", sheets.pending_xlsx([], {}, {"list": "trial"}))
+    with pytest.raises(wordlist.WordListError, match="made on the trial copy"):
+        run(lambda c, n: wordlist.store_pending_answers(c, n, filled, BY, "p.xlsx"))
 
 
 def test_list_review_resolves_answered_pending_items(db):
@@ -221,31 +280,35 @@ def test_list_review_resolves_answered_pending_items(db):
                          "('trial', %s, '', 'asked')", (p,))
         rows = [{"row": 2, "plain": "dipa", "result": "dīpa"}, {"row": 3, "plain": "puja", "result": "pūjā"}]
         items = harvest.review_list(rows, [], wordlist.mappings(conn, name))
-        return wordlist.create_review(conn, name, "list", "answers.xlsx", [{"name": "answers.xlsx"}], "a@gmail.com",
-                                      items)
+        return wordlist.create_review(conn, name, "list", "answers.xlsx", [{"name": "answers.xlsx"}], BY, items)
     rid = run(setup)
-    run(lambda c, n: wordlist.accept_review(c, n, rid, "a@gmail.com"))
+    apply(rid, upload(rid, {}))                                                # "Add" is filled in for a list
     assert [p["plain_text"] for p in run(wordlist.pending)] == ["ganesha"]
-    assert run(lambda c, n: wordlist.entry_by_plain(c, n, "dipa"))["diacritic_text"] == "dīpa"
+    assert words()["dipa"] == "dīpa"
 
 
 def test_start_the_trial_again(db):
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="dipa", result="dīpa"))
-    added = run(wordlist.batches)[0]["id"]
-    reset = run(lambda c, n: wordlist.reset_trial(c, "a@gmail.com"))
-    assert {r["plain_text"]: r["diacritic_text"] for r in run(wordlist.entries)} == dict(LIVE)
+    rid = make_review()
+    added = apply(rid, upload(rid, {(NEW, "dipa"): {"Your decision": "Add"}}))["batch"]
+    reset = run(lambda c, n: wordlist.reset_trial(c, BY))
+    assert words() == dict(LIVE)
     assert run(lambda c, n: wordlist.get_batch(c, n, reset))["kind"] == "reset"
     with pytest.raises(wordlist.WordListError, match="started again"):
-        run(lambda c, n: wordlist.undo(c, n, added, "a@gmail.com"))
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="dipa", result="dīpa"))  # ids still free
+        run(lambda c, n: wordlist.undo(c, n, added, BY))
+    r2 = make_review()
+    apply(r2, upload(r2, {(NEW, "dipa"): {"Your decision": "Add"}}))          # ids still free
+    assert words()["dipa"] == "dīpa"
 
 
 def test_live_mode_changes_the_real_list_and_never_mixes(db, monkeypatch):
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="dipa", result="dīpa"))     # trial
+    rid = make_review()
+    apply(rid, upload(rid, {(NEW, "dipa"): {"Your decision": "Add"}}))          # trial
     monkeypatch.setenv("DIACRITICAL_WORDS_LIST", "live")
     assert run(lambda c, n: n) == "live"
     assert run(wordlist.batches) == [] and "dipa" not in run(wordlist.mappings)
-    run(lambda c, n: wordlist.save_entry(c, n, "a@gmail.com", plain="seva", result="sevā"))
+    assert run(lambda c, n: wordlist.uploads(c, n)) == []
+    r2 = make_review("The sevā was done.\n")
+    apply(r2, upload(r2, {(NEW, "seva"): {"Your decision": "Add"}}))
     assert live_rows(db)["seva"] == "sevā"
     monkeypatch.setenv("DIACRITICAL_DATABASE_URL", "")
     with pytest.raises(wordlist.NotConfigured):

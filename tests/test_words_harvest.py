@@ -1,6 +1,7 @@
-"""The Diacritical words dashboard's pure logic (diacritical/harvest.py): reading uploads (.docx, .txt, PDF, .xlsx
-lists), sorting a document's words against a small fake list, the review of an offline list, what Accept does, the
-edit page's boxes <-> the stored code, and the report. No database.
+"""The Diacritical words dashboard's pure logic: reading uploads (.docx, .txt, PDF, .xlsx lists) and sorting a
+document's words against a small fake list (diacritical/harvest.py); the report and pending list workbooks, reading
+them back filled in (drop-down values, free text, sorted and deleted rows, correct spellings, capitals) and what Apply
+does (diacritical/sheets.py). No database.
   .venv/bin/python -m pytest tests/test_words_harvest.py -q
 """
 import io
@@ -11,7 +12,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from diacritical import harvest  # noqa: E402
+from diacritical import harvest, sheets  # noqa: E402
 
 LIST = {
     "krishna": "kṛs͟hṇa",
@@ -191,10 +192,9 @@ def test_how_a_new_word_was_seen():
     assert new["Gaṇesha"]["seen"] == "name"         # a capital, also mid-sentence
     assert new["Dīpa"]["seen"] == "small"           # also seen in small letters (the most common spelling leads)
     assert new["Abhoktā"]["seen"] == "start"        # a capital only at the start of a sentence
-    assert harvest.default_decisions(review(text))[new["Gaṇesha"]["id"]] == {"cap": "capital"}
 
 
-def test_spellings_of_one_word_are_one_row():
+def test_spellings_of_one_word_are_one_item_with_a_row_each():
     text = "Kṛshṇa and Kṛs͟hṇa and Krshṇa met. Then Vināyaka and Vinayakā came.\n"
     r = review(text)
     assert len(r["sections"]["clash"]) == 1
@@ -202,20 +202,11 @@ def test_spellings_of_one_word_are_one_row():
     forms = {f["form"]: f["status"] for f in clash["forms"]}
     assert forms == {"Kṛshṇa": "differs", "Krshṇa": "differs", "Kṛs͟hṇa": "same as our list"}
     assert sorted(clash["options"]) == ["krshṇa", "kṛshṇa"]
-    assert [label for _, label in harvest.choice_options(clash)][1:3] == [
-        f"The document is right: {clash['options'][0]}", f"The document is right: {clash['options'][1]}"]
+    assert [x["result"] for x in clash["rows"]] == clash["options"] and all(x["times"] == 1 for x in clash["rows"])
+    assert sheets.refs(clash) == [f"{clash['id']}:0", f"{clash['id']}:1"]
     new = r["sections"]["new"]
     assert len(new) == 1 and sorted(new[0]["options"]) == ["vinayakā", "vināyaka"]
-    assert [v for v, _ in harvest.choice_options(new[0])][:2] == ["add:0", "add:1"]
-
-
-def test_suggestions_for_plurals_and_hyphenated_words():
-    assert harvest.suggestions("modaka-s", "modaka-s", LIST) == [{"plain": "modakas", "result": "modaka-s"}]
-    assert harvest.suggestions("bhokta-s", "bhoktā-s", LIST) == [
-        {"plain": "bhoktas", "result": "bhoktā-s"}, {"plain": "bhokta", "result": "bhoktā"}]
-    assert harvest.suggestions("laddu-s", "laḍḍū-s", LIST) == [{"plain": "laddus", "result": "laḍḍū-s"}]  # laddu exists
-    assert harvest.suggestions("sandhya-vandana", "sandhyā-vandana", LIST) == [
-        {"plain": "sandhya vandana", "result": "sandhyā-vandana"}]
+    assert {x["form"] for x in new[0]["rows"]} == {"Vināyaka", "Vinayakā"}
 
 
 # ---------- offline lists ----------
@@ -268,121 +259,289 @@ def test_list_review():
     whole = [{"row": n, "plain": k, "result": v} for n, (k, v) in enumerate(LIST.items()) if k != "god"]
     r2 = harvest.review_list(whole, [], LIST)
     assert r2["whole_list"] and [i["plain"] for i in r2["sections"]["lmissing"]] == ["god"]
-    d = harvest.default_decisions(r2)
-    assert d[r2["sections"]["lmissing"][0]["id"]] == {"choice": "keep"}
 
 
-# ---------- choices and Accept ----------
+# ---------- stored codes ----------
 
-def test_plan_from_choices():
-    r = review()
-    s = r["sections"]
-    clash, new, unmarked = by_form(s["clash"]), by_form(s["new"]), {i["plain"]: i for i in s["unmarked"]}
-    d = harvest.default_decisions(r)
-    assert set(harvest.undecided(r, d)) == {i["id"] for i in s["clash"] + s["new"]}
-    d[clash["Kṛshṇa"]["id"]] = {"choice": "doc:0", "cap": "keep"}             # always capital stays
-    d[clash["Ātma"]["id"]] = {"choice": "list", "cap": "capital"}             # our list, but always capital
-    d[clash["Kshamā Yāchanā"]["id"]] = {"choice": "pending", "cap": "keep"}
-    assert clash["kănarā"]["note"] == "only the capital letter differs" and clash["kănarā"]["gives"] == "Kănarā"
-    d[clash["kănarā"]["id"]] = {"choice": "list", "cap": "keep"}             # nothing changes
-    d[new["Akartā"]["id"]] = {"choice": "add:0", "cap": "capital"}
-    d[new["Dīpa"]["id"]] = {"choice": "add:0", "cap": "normal"}
-    d[new["Abhoktā"]["id"]] = {"choice": "pending", "cap": "normal"}
-    d[unmarked["chitrapur"]["id"]] = {"choice": "pending"}
-    for i in s["new"]:
-        d.setdefault(i["id"], {}).setdefault("choice", "skip")
-    p = harvest.plan(r, d, "talk.docx")
-    assert p["undecided"] == [] and p["clashing"] == []
-    assert {(c["plain"], c["old"], c["result"]) for c in p["update"]} == {
-        ("krshna", "{{}}{{kṛs͟hṇa}}", "{{}}{{kṛshṇa}}"), ("atma", "ātmā", "{{}}{{ātmā}}")}
-    assert {(c["plain"], c["result"]) for c in p["add"]} == {("akarta", "{{}}{{akartā}}"), ("dipa", "dīpa")}
-    assert sorted(x["plain"] for x in p["pending"]) == ["abhokta", "chitrapur", "kshama yachana"]
-    assert {x["plain"]: x["suggested"] for x in p["pending"]}["kshama yachana"] == "kshamā yāchanā"
-    assert all(x["source"] == "talk.docx" and x["context"] for x in p["pending"])
-    assert harvest.plan_sentence(p) == "Accept will add 2 words, change 2, and put 3 on the pending list."
-    assert harvest.plan_sentence(p, done=True).startswith("Accepted: added 2 words")
-
-
-def test_extras_and_name_entries():
-    r = review("We offered thālī-s to the Gŏd.\n")
-    new = by_form(r["sections"]["new"])["thālī-s"]
-    assert new["extras"] == [{"plain": "thalis", "result": "thālī-s"}, {"plain": "thali", "result": "thālī"}]
-    d = {new["id"]: {"choice": "add:0", "cap": "normal", "extras": [0]}}
-    clash = r["sections"]["clash"][0]
-    d[clash["id"]] = {"choice": "doc:0", "cap": "keep"}                       # a Name entry typed with a capital
-    p = harvest.plan(r, d)
-    assert {(c["plain"], c["result"]) for c in p["add"]} == {("thali-s", "thālī-s"), ("thalis", "thālī-s")}
-    assert p["update"] == [{"plain": "god", "old": "{{gŏḍ}}{{god}}", "result": "{{gŏḍ}}{{gŏd}}", "item": clash["id"]}]
-    assert harvest.replace_result("{{gŏḍ}}{{god}}", "gŏd", capitalised=False) == "{{gŏd}}{{god}}"
+def test_codes_types_and_descriptions():
     assert harvest.with_type("{{}}{{kārtik, kārtika}}", "normal") == "{{kārtik, kārtika}}"
     assert harvest.with_type("ātmā", "capital") == "{{}}{{ātmā}}"
     assert harvest.with_type("{{gŏḍ}}{{god}}", "capital") == "{{}}{{gŏḍ}}"
-
-
-# ---------- the edit page's boxes <-> stored code ----------
-
-@pytest.mark.parametrize("code,boxes", [
-    ("kṛs͟hṇa", {"type": "normal", "result": "kṛs͟hṇa"}),
-    ("{{}}{{kṛs͟hṇa}}", {"type": "capital", "result": "kṛs͟hṇa"}),
-    ("{{abhis͟heka}}{{abhis͟hek}}", {"type": "name", "result": "abhis͟heka", "name": "abhis͟hek"}),
-    ("{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}",
-     {"type": "choices", "choices": ["nāmāvalī (hindi)", "nāmāvaliḥ (sanskrit)"]}),
-])
-def test_boxes_and_code_both_ways(code, boxes):
-    got = harvest.code_to_boxes(code)
-    assert got["advanced"] == "" and {k: got[k] for k in boxes} == boxes
-    assert harvest.boxes_to_code(got) == code
-    assert harvest.box_problems(got) == []
-
-
-@pytest.mark.parametrize("code", ["{{}}{{kārtik, kārtika}}", "{{saṅgīta}}{{saṅgeetā, saṅgītā}}", "{{pūjā}}",
-                                  "{{a}}{{b}}{{c}}", "a, b"])
-def test_codes_the_boxes_cant_show_go_to_advanced(code):
-    boxes = harvest.code_to_boxes(code)
-    assert boxes["advanced"] == code
-    assert harvest.boxes_to_code(boxes) == harvest.clean_result(code)
-
-
-def test_boxes_are_cleaned_and_checked():
-    assert harvest.boxes_to_code({"type": "normal", "result": "  Kṛs̲h̲ṇa "}) == "kṛs͟hṇa"
-    assert harvest.boxes_to_code({"type": "name", "result": "Gŏḍ", "name": "God"}) == "{{gŏḍ}}{{god}}"
-    assert harvest.boxes_to_code({"type": "choices", "choices": ["Kārtik", "", "kārtika "]}) == "{{kārtik, kārtika}}"
-    assert harvest.boxes_to_code({"type": "normal", "result": "x", "advanced": "{{}}{{Kārtik, kārtika}}"}) == \
-        "{{}}{{kārtik, kārtika}}"
-    assert harvest.box_problems({"type": "normal", "result": ""}) == ["Please type the result."]
-    assert "Choices needs at least two" in harvest.box_problems({"type": "choices", "choices": ["one"]})[0]
-    assert "without {{ }} or commas" in harvest.box_problems({"type": "normal", "result": "a, b"})[0]
-    assert harvest.box_problems({"type": "name", "result": "gŏḍ", "name": ""}) == ["Please type how it's spelt as a name."]
-    assert "can't be used" in harvest.box_problems({"advanced": "{{a}}{{b}}{{c}}"})[0]
-
-
-def test_describe_and_preview():
+    assert harvest.with_type("ātmā", "keep") == "ātmā"
+    assert harvest.replace_result("{{gŏḍ}}{{god}}", "gŏd", capitalised=False) == "{{gŏd}}{{god}}"
+    assert harvest.replace_result("{{gŏḍ}}{{god}}", "gŏd", capitalised=True) == "{{gŏḍ}}{{gŏd}}"
+    assert harvest.replace_result("{{}}{{kanarā}}", "kănarā", capitalised=True) == "{{}}{{kănarā}}"
     assert harvest.describe("{{}}{{kṛs͟hṇa}}") == "Kṛs͟hṇa (always capital)"
     assert harvest.describe("{{gŏḍ}}{{god}}") == "gŏḍ / as a name: God"
     assert harvest.describe("{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}") == \
         "choice: nāmāvalī (hindi) or nāmāvaliḥ (sanskrit)"
     assert harvest.describe("{{}}{{kārtik, kārtika}}") == "choice: Kārtik or Kārtika (always capital)"
-    assert harvest.describe("{{}}{{parijñānāshrama trayodashī}}") == "Parijñānāshrama Trayodashī (always capital)"
-    assert harvest.preview("god", "{{gŏḍ}}{{god}}") == ("gŏḍ", "God")
-    assert harvest.preview("krshna", "{{}}{{kṛs͟hṇa}}") == ("Kṛs͟hṇa", "Kṛs͟hṇa")
     assert harvest.small_result("{{}}{{Kṛs͟hṇa}}") == "kṛs͟hṇa"
 
 
 # ---------- the report ----------
 
-def test_report_has_every_section_with_the_decisions():
+INFO = {"review": 7, "list": "trial", "list_label": "the trial copy", "files": ["talk.docx"], "made": "20 Nov 2026",
+        "by": "a@gmail.com", "status": "Waiting for your decisions", "made_iso": "2026-11-20T10:00:00"}
+
+
+def workbook(data):
     from openpyxl import load_workbook
+    return load_workbook(io.BytesIO(data))
+
+
+def rows_of(ws):
+    heads = [c.value for c in ws[2]]
+    return [dict(zip(heads, r)) for r in ws.iter_rows(min_row=3, values_only=True)]
+
+
+def fill(data, answers, *, delete=(), reverse=()) -> bytes:
+    """Fill a workbook as a person would. answers: {(sheet, plain word or Ref): {column header: value}}. Rows of the
+    sheets in `reverse` are put in the opposite order (as if sorted); rows whose plain word is in `delete` are
+    deleted."""
+    wb = workbook(data)
+    for ws in wb.worksheets:
+        if ws.title in ("Start here", sheets.DASHBOARD):
+            continue
+        heads = [c.value for c in ws[2]]
+        values = [list(r) for r in ws.iter_rows(min_row=3, values_only=True)]
+        if ws.title in reverse:
+            values.reverse()
+        for row in values:
+            plain = row[heads.index("Plain word")] if "Plain word" in heads else None
+            ref = row[heads.index("Ref")] if "Ref" in heads else None
+            for key in ((ws.title, plain), (ws.title, ref)):
+                for header, value in answers.get(key, {}).items():
+                    row[heads.index(header)] = value
+        for n, row in enumerate(values, 3):
+            for i, v in enumerate(row, 1):
+                ws.cell(n, i).value = v
+        for n in range(len(values) + 2, 2, -1):
+            if "Plain word" in heads and ws.cell(n, heads.index("Plain word") + 1).value in delete:
+                ws.delete_rows(n)
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_report_layout_drop_downs_and_hidden_parts():
     r = review()
-    d = harvest.default_decisions(r)
-    data = harvest.report_xlsx(r, d, {"title": "Review #1", "list": "the trial copy", "files": ["talk.docx"],
-                                      "made": "20 Nov 2026", "by": "admin@gmail.com", "status": "not accepted yet"})
-    wb = load_workbook(io.BytesIO(data))
-    assert wb.sheetnames == ["Summary", "1 Different from our list", "2 New words", "3 Written without marks",
-                             "4 Style only", "5 Doubtful", "6 Already in our list"]
-    unmarked = [row for row in wb["3 Written without marks"].iter_rows(min_row=3, values_only=True)]
-    assert unmarked and all(row[-1] == "Nothing to change" for row in unmarked)
-    assert [row[-1] for row in wb["4 Style only"].iter_rows(min_row=3, values_only=True)] == ["Nothing to change"] * 2
-    assert any("Not accepted yet" in str(c) for row in wb["Summary"].iter_rows(values_only=True) for c in row)
-    lst = harvest.list_xlsx([{"plain_text": "b", "diacritic_text": "bā"}, {"plain_text": "a", "diacritic_text": "ā"}])
-    rows, problems = harvest.read_list_xlsx(lst)                              # the download reads back as a list
+    wb = workbook(sheets.report_xlsx(r, INFO))
+    assert wb.sheetnames == ["Start here", "Different from our list", "New words", "Written without marks",
+                             "Style only", "Doubtful", "Already in our list", "_dashboard"]
+    assert wb["_dashboard"].sheet_state == "hidden" and all(
+        ws.sheet_state == "visible" for ws in wb.worksheets[:-1])
+    meta = {row[0]: row[1] for row in wb["_dashboard"].iter_rows(min_row=2, values_only=True) if row[0]}
+    assert meta["kind"] == "report" and meta["review"] == 7 and meta["list"] == "trial"
+    start = "\n".join(str(c) for row in wb["Start here"].iter_rows(values_only=True) for c in row if c)
+    assert "Fill in the yellow column “Your decision” on “Different from our list” and “New words”" in start
+    assert "Anything left blank goes to the pending list" in start and "Upload your decisions" in start
+
+    clash = wb["Different from our list"]
+    heads = [c.value for c in clash[2]]
+    assert heads == ["Word (as in the document)", "Plain word", "Times", "Pages", "Example line", "Our list gives",
+                     "Your decision", "Capital", "Correct spelling", "Notes", "Ref"]
+    assert clash.freeze_panes == "A3" and clash.auto_filter.ref.startswith("A2:K")
+    assert clash.column_dimensions["K"].hidden                              # Ref
+    last = clash.max_row
+    dvs = {str(dv.sqref): dv for dv in clash.data_validations.dataValidation}
+    assert dvs[f"G3:G{last}"].formula1 == '"Our list is right,Document is right,Pending"'
+    assert dvs[f"H3:H{last}"].formula1 == '"Normal,Always capital"'
+    assert all(dv.errorStyle == "warning" and dv.allow_blank and dv.type == "list" for dv in dvs.values())
+    assert clash["G3"].fill.fgColor.rgb.endswith("FFF2A8") and clash["F3"].fill.fgColor.rgb.endswith("000000")
+    gives = {row["Plain word"]: row["Our list gives"] for row in rows_of(clash)}
+    assert gives["krshna"] == "Kṛs͟hṇa (always capital)" and gives["atma"] == "Ātmā"
+
+    new = wb["New words"]
+    dvs = {str(dv.sqref): dv.formula1 for dv in new.data_validations.dataValidation}
+    assert dvs[f"F3:F{new.max_row}"] == '"Add,Pending,Skip"'
+    caps = {row["Plain word"]: row["Capital"] for row in rows_of(new)}
+    assert caps["ganesha"] == "Always capital" and caps["dipa"] is None   # only ever seen with a capital mid-sentence
+    unmarked = wb["Written without marks"]
+    assert {str(dv.sqref): dv.formula1 for dv in unmarked.data_validations.dataValidation} == {
+        f"G3:G{unmarked.max_row}": '"Nothing to change,Pending"'}
+    assert all(row["Your decision"] == "Nothing to change" for row in rows_of(unmarked))
+    for title in ("Style only", "Doubtful", "Already in our list"):
+        ws = wb[title]
+        assert not ws.data_validations.dataValidation and ws["A2"].fill.fgColor.rgb.endswith("E4E4E4")
+        assert {row["Decision"] for row in rows_of(ws)} == {"Nothing to change"}
+
+    small = sheets.report_xlsx(review("Shrī Kṛshṇa came.\n"), INFO)          # empty sheets are left out
+    assert workbook(small).sheetnames == ["Start here", "Different from our list", "Already in our list", "_dashboard"]
+
+
+def test_reading_back_a_filled_report():
+    r = review()
+    data = fill(sheets.report_xlsx(r, INFO), {
+        ("Different from our list", "krshna"): {"Your decision": "Document is right"},
+        ("Different from our list", "atma"): {"Your decision": "Our list is correct. Always capitalised"},
+        ("Different from our list", "kanara"): {"Your decision": "maybe?"},
+        ("Different from our list", "kshama yachana"): {"Your decision": "  PENDING ", "Notes": "ask Gopal"},
+        ("New words", "akarta"): {"Your decision": "Add", "Capital": "Always capital", "Correct spelling": "Akartā "},
+        ("New words", "dipa"): {"Your decision": "add", "Capital": None, "Correct spelling": "dīpā"},
+        ("New words", "ganesha"): {"Your decision": "Skip"},
+        ("Written without marks", "chitrapur"): {"Your decision": "Pending", "Notes": "registered name"},
+    }, reverse=("Different from our list", "New words"), delete=("abhokta",))
+    filled = sheets.read_filled("talk-filled.xlsx", data)
+    assert filled["kind"] == "report" and filled["review"] == 7 and filled["list"] == "trial"
+    answers = sheets.answers_from_report(r, filled)
+    assert [(x["plain"], x["typed"]) for x in answers["unclear"]] == [("kanara", "maybe?")]
+    assert answers["missing"] == ["abhokta"]                                  # its row was deleted: pending
+    assert [(x["word"], x["read"]) for x in answers["words"]] == [("Ātma", "Our list is right · Always capital")]
+    p = sheets.plan(r, answers, dict(LIST), "talk.docx")
+    assert {(c["plain"], c["old"], c["result"]) for c in p["update"]} == {
+        ("krshna", "{{}}{{kṛs͟hṇa}}", "{{}}{{kṛshṇa}}"), ("atma", "ātmā", "{{}}{{ātmā}}")}
+    assert {(c["plain"], c["result"]) for c in p["add"]} == {("akarta", "{{}}{{akartā}}"), ("dipa", "dīpā")}
+    pending = {x["plain"]: x for x in p["pending"]}
+    assert set(pending) == {"kanara", "kshama yachana", "abhokta", "chitrapur"}
+    assert pending["kshama yachana"]["notes"] == "ask Gopal" and pending["chitrapur"]["notes"] == "registered name"
+    assert pending["kanara"]["suggested"] == "{{}}{{kănarā}}"               # in the entry's own form
+    assert pending["chitrapur"]["suggested"] == "{{}}{{chitrāpur}}" and pending["abhokta"]["source"] == "talk.docx"
+    assert p["resolve"] == ["atma"] and p["skipped"] == []
+
+    changed = dict(LIST, krshna="kṛṣṇa", dipa="dīpa")                         # changed since the report was made
+    p2 = sheets.plan(r, answers, changed)
+    assert sorted((x["plain"], x["now"]) for x in p2["skipped"]) == [("dipa", "dīpa"), ("krshna", "kṛṣṇa")]
+    assert {c["plain"] for c in p2["add"] + p2["update"]} == {"akarta", "atma"}
+    p2.update(pending_new=p2["pending"], pending_off=1)
+    assert sheets.sentence(p2) == "This will add 1 word, change 1, put 4 on the pending list, and take 1 off the " \
+                                  "pending list."
+    assert sheets.sentence(dict(p2, add=[], update=[], pending_new=[], pending_off=0)) == \
+        "This changes nothing in the list."
+
+    # a report re-downloaded shows what was uploaded
+    again = workbook(sheets.report_xlsx(r, INFO, answers["cells"]))
+    assert {row["Plain word"]: row["Your decision"] for row in rows_of(again["Different from our list"])}["krshna"] \
+        == "Document is right"
+
+
+def test_a_word_spelt_two_ways_and_unclear_rows():
+    r = review("Kṛshṇa and Krshṇa met at the dīpa.\n")
+    clash = r["sections"]["clash"][0]
+    blank = sheets.report_xlsx(r, INFO)
+    both = fill(blank, {("Different from our list", ref): {"Your decision": "Document is right"}
+                        for ref in sheets.refs(clash)})
+    a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", both))
+    assert a["rows"][clash["id"]]["choice"] == "pending" and "more than one spelling" in a["unclear"][0]["why"]
+    one = fill(blank, {("Different from our list", sheets.refs(clash)[1]): {"Your decision": "magazine is right"}})
+    p = sheets.plan(r, sheets.answers_from_report(r, sheets.read_filled("x.xlsx", one)), LIST)
+    assert [(c["plain"], c["result"]) for c in p["update"]] == [("krshna", "{{}}{{" + clash["options"][1] + "}}")]
+    odd = fill(blank, {("Different from our list", sheets.refs(clash)[0]): {"Your decision": "Our list is right",
+                                                                          "Correct spelling": "kṛṣṇa"},
+                       ("New words", "dipa"): {"Your decision": "Add", "Capital": "sometimes"}})
+    a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", odd))
+    assert sorted(x["plain"] for x in a["unclear"]) == ["dipa", "krshna"]
+    assert {d["choice"] for d in a["rows"].values()} == {"pending"}
+
+
+@pytest.mark.parametrize("kind,typed,key", [
+    ("clash", "Our list is right", "list"), ("clash", "our  list is RIGHT.", "list"),
+    ("clash", "Magazine is correct. Always capitalised", "doc"), ("clash", "Keep on pending list", "pending"),
+    ("clash", "Our list is right. But when the input is capitalised the output should be too", "list"),
+    ("clash", "our list is right, or the magazine is right?", None), ("clash", "yes", None), ("clash", "", None),
+    ("new", "Keep on Pending list", "pending"), ("new", "yes", "add"), ("new", "ignore", "skip"),
+    ("unmarked", "ignore", "none"), ("unmarked", "Our list is correct", "none"),
+    ("pending", "Remove from pending", "remove"), ("pending", "add", "add"), ("pending", "pending", "stay"),
+])
+def test_reading_what_people_type(kind, typed, key):
+    assert sheets.read_choice(kind, typed)[0] == key
+
+
+def test_capitals_in_words():
+    assert sheets.capital_in_words("This word should always be capitalised, it's a place name") == "capital"
+    assert sheets.capital_in_words("Need not be capitalised always (unless at the beginning)") == "normal"
+    assert sheets.capital_in_words("when the input is capitalised the output should also be") is None
+    assert sheets.read_capital("always capitalised") == "capital" and sheets.read_capital(" ") is None
+    assert sheets.read_capital("Normal") == "normal" and sheets.read_capital("sometimes") == "?"
+
+
+def test_files_that_are_not_ours_are_refused():
+    with pytest.raises(sheets.NotOurs, match="isn't a report or pending list"):
+        sheets.read_filled("mine.xlsx", make_xlsx([["plain_text", "diacritic_text"], ["puja", "pūjā"]]))
+    with pytest.raises(harvest.ReadProblem, match="save the file as an Excel workbook"):
+        sheets.read_filled("old.xls", b"x")
+    with pytest.raises(harvest.ReadProblem, match="couldn't be opened"):
+        sheets.read_filled("broken.xlsx", b"PK broken")
+    assert not sheets.is_dashboard_file(make_xlsx([["a"]]))
+    assert sheets.is_dashboard_file(sheets.report_xlsx(review(), INFO))
+
+
+def test_offline_list_report_round_trip():
+    rows = [{"row": 2, "plain": "abhokta", "result": "abhoktā"}, {"row": 3, "plain": "puja", "result": "pūja"},
+            {"row": 4, "plain": "dipa", "result": "dīpa"}]
+    r = harvest.review_list(rows, [], LIST)
+    wb = workbook(sheets.report_xlsx(r, INFO))
+    assert wb.sheetnames == ["Start here", "New in your list", "Changed", "_dashboard"]
+    assert {row["Plain word"]: row["Your decision"] for row in rows_of(wb["New in your list"])} == {
+        "abhokta": "Add", "dipa": "Add"}                                       # Add is filled in for a list's words
+    data = fill(sheets.report_xlsx(r, INFO), {("New in your list", "dipa"): {"Your decision": "Pending"},
+                                              ("Changed", "puja"): {"Your decision": "Use your list"}})
+    p = sheets.plan(r, sheets.answers_from_report(r, sheets.read_filled("x.xlsx", data)), LIST)
+    assert [(c["plain"], c["result"]) for c in p["add"]] == [("abhokta", "abhoktā")]
+    assert [(c["plain"], c["result"]) for c in p["update"]] == [("puja", "pūja")]
+    assert [x["plain"] for x in p["pending"]] == ["dipa"]
+
+
+# ---------- the pending list ----------
+
+def test_pending_list_round_trip():
+    from datetime import datetime
+    when = datetime(2026, 11, 20, 5, 0)
+    items = [
+        {"id": 11, "plain_text": "abhokta", "suggested": "{{}}{{abhoktā}}", "reason": "New word", "source": "x.pdf",
+         "page": "39", "context": "Akartā-Abhoktā", "notes": "", "added_at": when},
+        {"id": 12, "plain_text": "kanara", "suggested": "{{}}{{kănarā}}", "reason": "Different", "source": "x.pdf",
+         "page": "21", "context": "Kănarā Sāraswat", "notes": "asked Gopal", "added_at": when},
+        {"id": 13, "plain_text": "dipa", "suggested": "dīpa", "reason": "New word", "source": "x.pdf", "page": "2",
+         "context": "", "notes": "", "added_at": when},
+        {"id": 14, "plain_text": "ganesha", "suggested": "gaṇesha", "reason": "New word", "source": "", "page": "",
+         "context": "", "notes": "", "added_at": when},
+        {"id": 15, "plain_text": "seva", "suggested": "sevā", "reason": "New word", "source": "", "page": "",
+         "context": "", "notes": "", "added_at": when},
+        {"id": 16, "plain_text": "atma", "suggested": "ātma", "reason": "Different", "source": "", "page": "",
+         "context": "", "notes": "", "added_at": when},
+    ]
+    current = dict(LIST, kanara="{{}}{{kanarā}}")
+    data = sheets.pending_xlsx(items, current, {"list": "trial", "made_iso": "2026-11-20T10:00:00",
+                                                "when": lambda t: t.strftime("%d %b %Y")})
+    wb = workbook(data)
+    assert wb.sheetnames == ["Pending", "_dashboard"] and wb["_dashboard"].sheet_state == "hidden"
+    ws = wb["Pending"]
+    rows = {row["Plain word"]: row for row in rows_of(ws)}
+    assert rows["kanara"]["Result"] == "kănarā" and rows["kanara"]["Capital"] == "Always capital"
+    assert rows["kanara"]["Our list now gives"] == "Kanarā (always capital)"
+    assert rows["kanara"]["Notes"] == "asked Gopal"
+    assert rows["dipa"]["Result"] == "dīpa" and rows["dipa"]["Capital"] is None
+    assert {str(dv.sqref).split(":")[0][0]: dv.formula1 for dv in ws.data_validations.dataValidation} == {
+        "I": '"Add,Remove from pending"', "K": '"Normal,Always capital"'}
+    assert ws.column_dimensions["M"].hidden
+
+    filled = sheets.read_filled("pending.xlsx", fill(data, {
+        ("Pending", "abhokta"): {"Your decision": "Add", "Result": "Abhoktā", "Capital": None},   # blank: Normal
+        ("Pending", "kanara"): {"Your decision": "Add", "Capital": None},      # blank: keeps always capital
+        ("Pending", "dipa"): {"Your decision": "Remove from pending"},
+        ("Pending", "ganesha"): {"Notes": "team asked"},                       # stays, with a note
+        ("Pending", "seva"): {"Your decision": "perhaps"},                     # can't be read: stays
+        ("Pending", "atma"): {"Your decision": "Add"},                         # its entry changed since: skipped
+    }, reverse=("Pending",)))
+    assert filled["kind"] == "pending" and filled["snapshot"]["12"]["entry"] == "{{}}{{kanarā}}"
+    answers = sheets.answers_from_pending(filled)
+    open_items = {i["id"]: i for i in items}
+    p = sheets.plan_pending(answers, open_items, dict(current, atma="{{}}{{ātmā}}"))
+    assert [(c["plain"], c["result"]) for c in p["add"]] == [("abhokta", "abhoktā")]
+    assert [(c["plain"], c["old"], c["result"]) for c in p["update"]] == [
+        ("kanara", "{{}}{{kanarā}}", "{{}}{{kănarā}}")]
+    assert p["remove"] == [13] and p["notes"] == {14: "team asked"} and sorted(p["done"]) == [11, 12]
+    assert [x["plain"] for x in p["unclear"]] == ["seva"] and [x["plain"] for x in p["skipped"]] == ["atma"]
+    del open_items[11]                                                         # answered meanwhile
+    p = sheets.plan_pending(answers, open_items, current)
+    assert [x["why"] for x in p["skipped"] if x["plain"] == "abhokta"] == ["already taken off the pending list"]
+    assert sheets.compose("Kṛs̲h̲ṇa", None, None) == "kṛs͟hṇa"                  # house style
+    assert sheets.compose("gŏd", None, "{{gŏḍ}}{{god}}") == "{{gŏd}}{{god}}"
+    assert sheets.compose("gŏd", "normal", "{{gŏḍ}}{{god}}") == "gŏd"
+
+
+def test_whole_list_reads_back_as_a_list():
+    lst = sheets.list_xlsx([{"plain_text": "b", "diacritic_text": "bā"}, {"plain_text": "a", "diacritic_text": "ā"}])
+    rows, problems = harvest.read_list_xlsx(lst)
     assert [(x["plain"], x["result"]) for x in rows] == [("a", "ā"), ("b", "bā")] and problems == []

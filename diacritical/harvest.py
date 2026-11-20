@@ -1,15 +1,14 @@
-"""Words with diacritical marks in an uploaded file, compared with the Diacritical word list: the review behind the
-dashboard's Add words page (admin_words.py). Pure functions: no database, no web.
+"""Words with diacritical marks in an uploaded file, compared with the Diacritical word list: what the dashboard's
+report is made from (admin_words.py; the Excel side is diacritical/sheets.py). Pure functions: no database, no web.
 
 - Reading: read_upload(name, data) tells a document (.docx, .pdf, .txt) from an offline word list (.xlsx, or a .txt
   of "plain,result" lines) and reads it. A PDF is read page by page with pypdf.
 - Document review: review_document(files, mappings) finds every word with marks (and every plain word the list would
   mark) and sorts them into: different from our list (clash), new, written without marks, style only, doubtful
   (look-alike letters, PDF quirks), already in the list. Phrase entries of the list found in the text are compared.
+  Clashes and new words have one row per spelling found ('rows').
 - List review: review_list(rows, problems, mappings): new, changed, missing from the file, problems, unchanged.
-- plan(review, decisions): what Accept does (adds, updates, deletes, pending items), and what is still undecided.
-- Entries: the stored code (diacritic_text) <-> the plain boxes of the edit page; describe(code) for people.
-- Spreadsheets: the review report, the whole list and the pending list as .xlsx.
+- Stored codes: parse_code, with_type (normal / always capital), replace_result, describe(code) for people.
 
 The stored code of an entry (always small letters): `word` (follows the typed case), `{{a, b}}` (choices, all shown),
 `{{small}}{{name}}` (typed with a capital it gives the second group: the "Name rule"), `{{}}{{x}}` (always capital).
@@ -399,6 +398,13 @@ def where(places, files) -> str:
     return "; ".join(p for p in parts if p)
 
 
+def _row(form: str, result: str, places, names) -> dict:
+    """One spelling of a word as a row of the report: the spelling as written, in the house style, how often, where,
+    an example line. places: [(file, page, line, ...)]."""
+    return {"form": form, "result": result, "times": len(places), "where": where([(p[0], p[1]) for p in places], names),
+            "line": context(places[0][2], form) if places else ""}
+
+
 def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappings: dict[str, str]) -> dict:
     """The review of one or more documents. files: [(file name, [(page or None, text), ...])]. Returns
     {'kind': 'document', 'files': [...], 'sections': {name: [items]}, 'counts': {...}}; every item that needs a
@@ -494,9 +500,11 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
             style.append(base | {"why": why})
             other_forms[key].append({"form": w, "times": len(places), "status": "style only", "gives": got})
         elif got == typed and key not in mappings and not any(has_marks(c) for c in choices(got)):
-            g = new_groups.setdefault(key, {"forms": Counter(), "places": [], "greek": False, "first": None})
+            g = new_groups.setdefault(key, {"forms": Counter(), "places": [], "greek": False,
+                                            "by_form": defaultdict(list)})
             g["forms"][hw] += len(places)
             g["places"] += places
+            g["by_form"][hw] += places
             g["greek"] |= any(x in w for x in GREEK_LOOKALIKES)
         else:
             only_capital = got.lower() == hw.lower() or hw.lower() in [c.lower() for c in choices(got)]
@@ -507,15 +515,15 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
     for key in sorted(clash_forms):
         forms = sorted(clash_forms[key], key=lambda f: -f["times"])
         first = forms[0]
-        options = []
+        by_result = {}               # one row per spelling (in the house style), most used first
         for f in forms:
-            r = clean_result(house(f["form"]))
-            if r not in options:
-                options.append(r)
+            by_result.setdefault(clean_result(house(f["form"])), []).append(f)
+        rows = [_row(fs[0]["form"], r, [p for f in fs for p in f["places"]], names) for r, fs in by_result.items()]
         places = [p for f in forms for p in f["places"]]
         clashes.append({
-            "kind": "clash", "plain": key, "entry": mappings.get(key), "options": options,
-            "forms": [{k: f[k] for k in ("form", "times", "status", "gives")} for f in forms] + other_forms.get(key, []),
+            "kind": "clash", "plain": key, "entry": mappings.get(key), "options": list(by_result), "rows": rows,
+            "forms": [{k: f[k] for k in ("form", "times", "status", "gives")} for f in forms]
+            + other_forms.get(key, []),
             "form": first["form"], "capitalised": first["form"][:1].isupper(), "gives": first["gives"],
             "times": sum(f["times"] for f in forms), "where": where([(fi, p) for fi, p, _, _ in places], names),
             "line": context(first["places"][0][2], first["form"]),
@@ -533,6 +541,8 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
         else:
             clashes.append({"kind": "clash", "plain": key, "entry": mappings.get(key),
                             "options": [clean_result(house(doc))], "phrase": True,
+                            "rows": [_row(doc, clean_result(house(doc)),
+                                          [(f, p, hit["line"]) for f, p in hit["places"]], names)],
                             "forms": [{"form": doc, "times": len(hit["places"]), "status": "differs", "gives": got}],
                             "form": doc, "capitalised": doc[:1].isupper(), "gives": got, "times": base["times"],
                             "where": base["where"], "line": base["line"], "note": "a phrase entry of our list"})
@@ -540,20 +550,18 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
     new = []
     for key, g in sorted(new_groups.items()):
         places = g["places"]
-        options = []
+        by_result = {}               # one row per spelling (in the house style), most used first
         for form, _ in g["forms"].most_common():
-            r = clean_result(form)
-            if r not in options:
-                options.append(r)
+            by_result.setdefault(clean_result(form), []).append(form)
+        rows = [_row(fs[0], r, [p for f in fs for p in g["by_form"][f]], names) for r, fs in by_result.items()]
         form = g["forms"].most_common(1)[0][0]
         small = any(not f[:1].isupper() for f in g["forms"])
         mid_capital = not small and any(not start for (_, _, _, start) in places)
         seen = "small" if small else "name" if mid_capital else "start"
-        new.append({"kind": "new", "plain": key, "form": form, "options": options, "times": len(places),
-                    "spellings": [f for f, _ in g["forms"].most_common()],
+        new.append({"kind": "new", "plain": key, "form": form, "options": list(by_result), "rows": rows,
+                    "times": len(places), "spellings": [f for f, _ in g["forms"].most_common()],
                     "where": where([(f, p) for f, p, _, _ in places], names),
-                    "line": context(places[0][2], form), "seen": seen, "greek": g["greek"],
-                    "extras": suggestions(key, options[0], mappings)})
+                    "line": context(places[0][2], form), "seen": seen, "greek": g["greek"]})
 
     unmarked_items = []
     for key, u in sorted(unmarked.items()):
@@ -574,23 +582,6 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
     return {"kind": "document", "sections": sections,
             "counts": {k: len(v) for k, v in sections.items()},
             "words_with_marks": sum(1 for w in occ if has_marks(w))}
-
-
-def suggestions(plain: str, result: str, mappings: dict[str, str]) -> list[dict]:
-    """Shantish's old rules, offered (unticked) on a new word's row: for "laddu-s" also "laddus" (same result) and the
-    singular "laddu" -> laḍḍū; for another hyphenated word also the spaced form."""
-    out = []
-    if re.search(r"-s$", plain) and result.endswith("-s"):
-        joined, single, single_result = plain[:-2] + "s", plain[:-2], result[:-2]
-        if joined not in mappings:
-            out.append({"plain": joined, "result": result})
-        if single and single not in mappings and has_marks(single_result):
-            out.append({"plain": single, "result": single_result})
-    elif "-" in plain:
-        spaced = plain.replace("-", " ")
-        if spaced not in mappings:
-            out.append({"plain": spaced, "result": result})
-    return out
 
 
 def _number(sections: dict) -> None:
@@ -629,211 +620,7 @@ def review_list(rows: list[dict], problems: list[dict], mappings: dict[str, str]
             "whole_list": whole, "rows": len(rows)}
 
 
-# ---------- choices and what Accept does ----------
-
-# The choices each kind of row offers: (value, label). Document clashes and new words get their options from the item.
-NEEDS_CHOICE = ("clash", "new", "lchanged")
-
-
-def choice_options(item: dict) -> list[tuple[str, str]]:
-    kind = item["kind"]
-    if kind == "clash":
-        docs = [(f"doc:{i}", "The document is right" if len(item["options"]) == 1 else f"The document is right: {r}")
-                for i, r in enumerate(item["options"])]
-        return [("list", "Our list is right")] + docs + [("pending", "Pending")]
-    if kind == "new":
-        adds = [] if item.get("now_in_list") else [
-            (f"add:{i}", "Add" if len(item["options"]) == 1 else f"Add {r}") for i, r in enumerate(item["options"])]
-        return adds + [("pending", "Pending"), ("skip", "Skip")]
-    if kind == "unmarked":
-        return [("none", "Nothing to change"), ("pending", "Pending")]
-    if kind == "lnew":
-        return ([] if item.get("now_in_list") else [("add", "Add")]) + [("pending", "Pending"), ("skip", "Skip")]
-    if kind == "lchanged":
-        return [("keep", "Keep our list"), ("use", "Use the file"), ("pending", "Pending")]
-    if kind == "lmissing":
-        return [("keep", "Keep"), ("delete", "Delete")]
-    return []
-
-
-CAPITAL_OPTIONS = {"clash": [("keep", "Keep as it is"), ("normal", "Normal"), ("capital", "Always capital")],
-                   "new": [("normal", "Normal"), ("capital", "Always capital")]}
-
-
-def default_decisions(review: dict) -> dict:
-    """The choices a new review starts with: rows that need a decision start empty (Always capital is preselected for
-    a new word only ever seen with a capital mid-sentence); the others start with the harmless choice."""
-    out = {}
-    for items in review["sections"].values():
-        for item in items:
-            kind = item.get("kind")
-            if kind == "clash":
-                out[item["id"]] = {"cap": "keep"}
-            elif kind == "new":
-                out[item["id"]] = {"cap": "capital" if item["seen"] == "name" else "normal"}
-            elif kind == "unmarked":
-                out[item["id"]] = {"choice": "none"}
-            elif kind == "lnew":
-                out[item["id"]] = {"choice": "add"}
-            elif kind == "lmissing":
-                out[item["id"]] = {"choice": "keep"}
-    return out
-
-
-def undecided(review: dict, decisions: dict) -> list[str]:
-    valid = {}
-    out = []
-    for items in review["sections"].values():
-        for item in items:
-            if item.get("kind") in NEEDS_CHOICE:
-                valid = {v for v, _ in choice_options(item)}
-                if (decisions.get(item["id"]) or {}).get("choice") not in valid:
-                    out.append(item["id"])
-    return out
-
-
-def with_type(code: str, cap: str) -> str:
-    """The code with its type set: cap "normal" or "capital" ("keep" leaves it)."""
-    p = parse_code(code)
-    if p is None or cap not in ("normal", "capital"):
-        return code
-    main = p["main"]
-    if cap == "capital":
-        return clean_result("{{}}{{" + main + "}}")
-    return clean_result("{{" + main + "}}" if "," in main else main)
-
-
-def replace_result(code: str | None, result: str, capitalised: bool) -> str:
-    """The entry with the document's spelling in place of what our list gives for that capitalisation, keeping its
-    type: always capital stays always capital; for a Name entry the group used for that capitalisation is replaced."""
-    p = parse_code(code) if code else None
-    if p is None:
-        return result
-    if p["type"] == "capital":
-        return clean_result("{{}}{{" + result + "}}")
-    if p["type"] == "name":
-        if capitalised:
-            return clean_result("{{" + p["main"] + "}}{{" + result + "}}")
-        return clean_result("{{" + result + "}}{{" + p["name"] + "}}")
-    return result
-
-
-def plan(review: dict, decisions: dict, source: str = "") -> dict:
-    """What Accept does with these choices: {'add': [{plain, result, item}], 'update': [{plain, old, result, item}],
-    'delete': [{plain, old, item}], 'pending': [{plain, suggested, reason, source, page, context, item}],
-    'resolve': [plain words the file confirms as they are], 'undecided': [item ids], 'clashing': [plain words two
-    rows want to change differently]}."""
-    out = {"add": [], "update": [], "delete": [], "pending": [], "resolve": [], "undecided": undecided(review, decisions),
-           "clashing": []}
-    s = review["sections"]
-
-    def pend(item, suggested, reason):
-        out["pending"].append({"plain": item["plain"], "suggested": suggested, "reason": reason, "source": source,
-                               "page": item.get("where", ""), "context": item.get("line", ""), "item": item["id"]})
-
-    for item in s.get("clash", []):
-        d = decisions.get(item["id"]) or {}
-        choice, cap = d.get("choice"), d.get("cap", "keep")
-        entry = item.get("entry")
-        if choice == "pending":
-            # suggested: the document's spelling, in the entry's own form (as "The document is right" would store it)
-            pend(item, with_type(replace_result(entry, item["options"][0], item.get("capitalised", False)), cap)
-                 if entry else item["options"][0],
-                 f"Different from our list: the document has {', '.join(f['form'] for f in item['forms'] if f['status'] == 'differs')}; "
-                 f"our list gives {item['gives']}")
-        elif choice == "list" and entry is not None:
-            new = with_type(entry, cap)
-            if new != entry:
-                out["update"].append({"plain": item["plain"], "old": entry, "result": new, "item": item["id"]})
-        elif choice and choice.startswith("doc:"):
-            result = item["options"][int(choice[4:])]
-            if entry is None:
-                out["add"].append({"plain": item["plain"], "result": with_type(result, cap if cap != "keep" else "normal"),
-                                   "item": item["id"]})
-            else:
-                new = with_type(replace_result(entry, result, item.get("capitalised", False)), cap)
-                if new != entry:
-                    out["update"].append({"plain": item["plain"], "old": entry, "result": new, "item": item["id"]})
-    for item in s.get("new", []):
-        d = decisions.get(item["id"]) or {}
-        choice, cap = d.get("choice"), d.get("cap", "normal")
-        if choice == "pending":
-            pend(item, with_type(item["options"][0], cap), "New word: not in our list")
-        elif choice and choice.startswith("add:"):
-            result = item["options"][int(choice[4:])]
-            out["add"].append({"plain": item["plain"], "result": with_type(result, cap), "item": item["id"]})
-            for i in d.get("extras", []):
-                if 0 <= i < len(item.get("extras", [])):
-                    x = item["extras"][i]
-                    out["add"].append({"plain": x["plain"], "result": with_type(x["result"], cap), "item": item["id"]})
-    for item in s.get("unmarked", []):
-        if (decisions.get(item["id"]) or {}).get("choice") == "pending":
-            pend(item, item.get("entry") or "", f"Written without marks in the document ({item['form']}); "
-                                                f"our list gives {item['gives']}")
-    for item in s.get("lnew", []):
-        choice = (decisions.get(item["id"]) or {}).get("choice")
-        if choice == "add":
-            out["add"].append({"plain": item["plain"], "result": item["result"], "item": item["id"]})
-        elif choice == "pending":
-            pend(item | {"where": f"row {item['row']}", "line": ""}, item["result"], "New in the uploaded list")
-    for item in s.get("lchanged", []):
-        choice = (decisions.get(item["id"]) or {}).get("choice")
-        if choice == "use" and item.get("entry") is None:  # deleted from the list meanwhile
-            out["add"].append({"plain": item["plain"], "result": item["result"], "item": item["id"]})
-        elif choice == "use":
-            out["update"].append({"plain": item["plain"], "old": item["entry"], "result": item["result"],
-                                  "item": item["id"]})
-        elif choice == "pending":
-            pend(item | {"where": f"row {item['row']}", "line": ""}, item["result"],
-                 f"Changed in the uploaded list; our list has {describe(item['entry'])}")
-        elif choice == "keep":
-            out["resolve"].append(item["plain"])
-    for item in s.get("lmissing", []):
-        if (decisions.get(item["id"]) or {}).get("choice") == "delete" and item.get("entry") is not None:
-            out["delete"].append({"plain": item["plain"], "old": item["entry"], "item": item["id"]})
-    out["resolve"] += [u["plain"] for u in s.get("unchanged", [])]
-
-    targets = defaultdict(set)
-    for op in ("add", "update", "delete"):
-        for c in out[op]:
-            targets[c["plain"]].add((op, c.get("result")))
-    out["clashing"] = sorted(p for p, t in targets.items() if len(t) > 1)
-    for op in ("add", "update", "delete"):  # the same change asked twice (an extra that is also its own row) is one
-        seen, kept = set(), []
-        for c in out[op]:
-            if c["plain"] not in seen:
-                seen.add(c["plain"])
-                kept.append(c)
-        out[op] = kept
-    return out
-
-
-def plan_sentence(p: dict, done: bool = False) -> str:
-    """'Accept will add 3 words, change 2, and put 130 on the pending list.' (done: 'Accepted: added 3 words, …')"""
-    def n(k, one, many):
-        return f"{k} {one if k == 1 else many}"
-    verbs = ("added", "changed", "deleted", "put") if done else ("add", "change", "delete", "put")
-    parts = []
-    if p["add"]:
-        parts.append(f"{verbs[0]} {n(len(p['add']), 'word', 'words')}")
-    if p["update"]:
-        parts.append(f"{verbs[1]} {len(p['update'])}")
-    if p["delete"]:
-        parts.append(f"{verbs[2]} {len(p['delete'])}")
-    if p["pending"]:
-        parts.append(f"{verbs[3]} {len(p['pending'])} on the pending list")
-    if not parts:
-        return "Accepted: nothing in the list changed." if done else "Accept will change nothing in the list."
-    joined = parts[0] if len(parts) == 1 else " and ".join(parts) if len(parts) == 2 else \
-        ", ".join(parts[:-1]) + ", and " + parts[-1]
-    return ("Accepted: " if done else "Accept will ") + joined + "."
-
-
-# ---------- entries: stored code <-> plain boxes ----------
-
-TYPES = {"normal": "Normal", "capital": "Always capital", "name": "Name (different when typed with a capital)",
-         "choices": "Choices"}
-
+# ---------- stored codes ----------
 
 def parse_code(code: str) -> dict | None:
     """{'type': normal|capital|name|choices, 'main': group, 'name': group} or None if the brackets don't make sense."""
@@ -852,71 +639,34 @@ def parse_code(code: str) -> dict | None:
     return None
 
 
+def with_type(code: str, cap: str) -> str:
+    """The code with its type set: cap "normal" or "capital" ("keep" or anything else leaves it)."""
+    p = parse_code(code)
+    if p is None or cap not in ("normal", "capital"):
+        return code
+    main = p["main"]
+    if cap == "capital":
+        return clean_result("{{}}{{" + main + "}}")
+    return clean_result("{{" + main + "}}" if "," in main else main)
+
+
+def replace_result(code: str | None, result: str, capitalised: bool) -> str:
+    """The entry with this spelling in place of what our list gives for that capitalisation, keeping its type: always
+    capital stays always capital; for a Name entry the group used for that capitalisation is replaced."""
+    p = parse_code(code) if code else None
+    if p is None or parse_code(result) is None or "{" in result:
+        return result
+    if p["type"] == "capital":
+        return clean_result("{{}}{{" + result + "}}")
+    if p["type"] == "name":
+        if capitalised:
+            return clean_result("{{" + p["main"] + "}}{{" + result + "}}")
+        return clean_result("{{" + result + "}}{{" + p["name"] + "}}")
+    return result
+
+
 def split_choices(group: str) -> list[str]:
     return [c for c in (re.sub(r"\s+", " ", x).strip() for x in (group or "").split(",")) if c]
-
-
-def boxes_to_code(boxes: dict) -> str:
-    """The stored code (house style) from the edit page's boxes; the Advanced box, when filled, wins."""
-    if (boxes.get("advanced") or "").strip():
-        return clean_result(boxes["advanced"])
-    kind = boxes.get("type") or "normal"
-    result = (boxes.get("result") or "").strip()
-    if kind == "capital":
-        code = "{{}}{{" + result + "}}"
-    elif kind == "name":
-        code = "{{" + result + "}}{{" + (boxes.get("name") or "").strip() + "}}"
-    elif kind == "choices":
-        code = "{{" + ", ".join(c.strip() for c in boxes.get("choices") or [] if c.strip()) + "}}"
-    else:
-        code = result
-    return clean_result(code)
-
-
-def code_to_boxes(code: str) -> dict:
-    """The edit page's boxes for a stored code. 'advanced' holds the code when the boxes can't show it exactly
-    (e.g. always capital with choices); then that box is what gets saved."""
-    boxes = {"type": "normal", "result": "", "name": "", "choices": [], "advanced": ""}
-    p = parse_code(code)
-    if p is not None:
-        main = split_choices(p["main"])
-        if p["type"] == "normal" and "," not in code:
-            boxes["result"] = code.strip()
-        elif p["type"] == "capital" and len(main) == 1:
-            boxes.update(type="capital", result=main[0])
-        elif p["type"] == "name" and len(main) == 1 and len(split_choices(p["name"])) == 1:
-            boxes.update(type="name", result=main[0], name=split_choices(p["name"])[0])
-        elif p["type"] == "choices" and len(main) >= 2:
-            boxes.update(type="choices", choices=main)
-    if p is None or boxes_to_code(boxes) != clean_result(code):
-        boxes = {"type": "normal", "result": "", "name": "", "choices": [], "advanced": code}
-    return boxes
-
-
-def box_problems(boxes: dict) -> list[str]:
-    """What's wrong with the boxes, in plain words (empty when they can be saved)."""
-    if (boxes.get("advanced") or "").strip():
-        why = code_problem(clean_result(boxes["advanced"]))
-        return [f"The stored code can't be used: {why}."] if why else []
-    kind = boxes.get("type") or "normal"
-    out = []
-    if kind == "choices":
-        if len([c for c in boxes.get("choices") or [] if c.strip()]) < 2:
-            out.append("Choices needs at least two spellings, one per line.")
-        if any(re.search("[{}]", c) for c in boxes.get("choices") or []):
-            out.append("Please type the spellings without {{ }}.")
-        return out
-    result = (boxes.get("result") or "").strip()
-    if not result:
-        out.append("Please type the result.")
-    for label, value in (("result", result), ("name", (boxes.get("name") or "").strip())):
-        if re.search("[{},]", value):
-            out.append(f"Please type the {label} without {{{{ }}}} or commas (for several spellings choose Choices).")
-    if kind == "name" and not (boxes.get("name") or "").strip():
-        out.append("Please type how it's spelt as a name.")
-    if not out and code_problem(boxes_to_code(boxes)):
-        out.append("The result has characters a word can't have.")
-    return out
 
 
 def _capital(text: str) -> str:
@@ -952,195 +702,3 @@ def small_result(code: str) -> str:
     """The word an entry stands for, in small letters (for counting distinct diacritical words)."""
     p = parse_code(code or "")
     return (p["main"] if p else code or "").strip().lower()
-
-
-def typed_with_capital(plain: str) -> str:
-    return " ".join(_capital(w) for w in plain.split(" "))
-
-
-def preview(plain: str, code: str) -> tuple[str, str]:
-    """The translator's output for the plain word typed small and with a capital, with this code."""
-    m = {plain: code}
-    return translate_text(plain, m), translate_text(typed_with_capital(plain), m)
-
-
-# ---------- spreadsheets ----------
-
-def _sheet(wb, title: str, note: str, headers: list[str], rows: list[list], widths: list[int]):
-    from openpyxl.styles import Alignment, Font, PatternFill
-    ws = wb.create_sheet(title[:31])
-    ws.append([note])
-    ws["A1"].font = Font(italic=True)
-    ws.append(headers)
-    for c in ws[2]:
-        c.font, c.fill = Font(bold=True), PatternFill("solid", fgColor="DDE7F3")
-    for r in rows:
-        ws.append(["" if v is None else v for v in r])
-    for i, w in enumerate(widths, 1):
-        ws.column_dimensions[ws.cell(2, i).column_letter].width = w
-    for row in ws.iter_rows(min_row=3):
-        for c in row:
-            c.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.freeze_panes = "A3"
-    return ws
-
-
-def _save(wb) -> bytes:
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
-
-
-def _label(item: dict, decision: dict) -> str:
-    return dict(choice_options(item)).get((decision or {}).get("choice"), "(not decided)")
-
-
-def _cap_label(item: dict, decision: dict) -> str:
-    return dict(CAPITAL_OPTIONS.get(item["kind"], [])).get((decision or {}).get("cap"), "")
-
-
-def report_xlsx(review: dict, decisions: dict, info: dict) -> bytes:
-    """The review for the teams: a Summary sheet, then one sheet per section with what was decided, including the rows
-    that change nothing (written without marks, style only, doubtful, already in the list). info: title, list,
-    files, made, by, status, accepted."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    wb = Workbook()
-    summary = wb.active
-    summary.title = "Summary"
-    s = review["sections"]
-    p = plan(review, decisions)
-    lines = [[info.get("title", "Review")], [f"Word list: {info.get('list', '')}"],
-             ["Files: " + ", ".join(info.get("files") or [])], [f"Made {info.get('made', '')} by {info.get('by', '')}"],
-             [f"Status: {info.get('status', '')}"], [], ["Section", "Rows", "What it means"]]
-    if review["kind"] == "document":
-        what = [("Different from our list", "clash", "In our list, but the document spells it differently"),
-                ("New words", "new", "Words with marks that are not in our list"),
-                ("Written without marks", "unmarked", "Plain in the document; our list would add marks (nothing changes)"),
-                ("Style only", "style", "The same word typed differently (underline, look-alike letters): fixed automatically"),
-                ("Doubtful", "doubtful", "Look-alike letters and PDF quirks: not compared"),
-                ("Already in our list", "already", "Exactly as our list gives them")]
-    else:
-        what = [("New", "lnew", "In the file, not in our list"), ("Changed", "lchanged", "In both, with a different result"),
-                ("Missing from the file", "lmissing", "In our list, not in the file (kept unless Delete was chosen)"),
-                ("Problems", "problems", "Rows of the file that were skipped"),
-                ("Left empty", "empty", "Rows with a plain word but no result (e.g. not answered yet): left out"),
-                ("Unchanged", "unchanged", "The same in the file and in our list")]
-    for label, key, meaning in what:
-        lines.append([label, len(s.get(key, [])), meaning])
-    accepted = str(info.get("status", "")).startswith("accepted")
-    lines += [[], ["Decided", "", plan_sentence(p, done=accepted) if accepted
-                   else "Not accepted yet. " + plan_sentence(p)]]
-    if p["undecided"]:
-        lines.append(["Not decided yet", len(p["undecided"]), ""])
-    for row in lines:
-        summary.append(row)
-    summary["A1"].font = Font(bold=True, size=13)
-    for c in summary[7]:
-        c.font = Font(bold=True)
-    summary.column_dimensions["A"].width = 28
-    summary.column_dimensions["B"].width = 8
-    summary.column_dimensions["C"].width = 90
-
-    def dec(item):
-        return decisions.get(item["id"]) or {}
-    if review["kind"] == "document":
-        _sheet(wb, "1 Different from our list", "In our list, but the document spells it differently.",
-               ["In the document", "Plain word", "Other spellings in the document", "Times", "Pages", "Example line",
-                "Our list gives", "Stored entry", "Decision", "Capital"],
-               [[i["form"], i["plain"], "; ".join(f"{f['form']} ({f['status']})" for f in i["forms"][1:]), i["times"],
-                 i["where"], i["line"], i["gives"], describe(i["entry"]) if i.get("entry") else "(not one entry)",
-                 _label(i, dec(i)), _cap_label(i, dec(i))] for i in s["clash"]],
-               [20, 16, 26, 7, 12, 50, 20, 26, 22, 14])
-        _sheet(wb, "2 New words", "Words with marks that are not in our list.",
-               ["In the document", "Plain word", "Times", "Pages", "Example line", "Seen as", "Decision", "Capital",
-                "Also added"],
-               [[i["form"], i["plain"], i["times"], i["where"], i["line"], SEEN[i["seen"]], _label(i, dec(i)),
-                 _cap_label(i, dec(i)) if (dec(i).get("choice") or "").startswith(("add", "pending")) else "",
-                 ", ".join(f"{i['extras'][x]['plain']} → {i['extras'][x]['result']}" for x in dec(i).get("extras", [])
-                           if (dec(i).get("choice") or "").startswith("add") and x < len(i["extras"]))]
-                for i in s["new"]], [20, 16, 7, 12, 50, 26, 14, 14, 24])
-        _sheet(wb, "3 Written without marks", "Written without marks in the document; our list would add marks. "
-               "Nothing changes in the list for these (for the teams' information).",
-               ["In the document", "Plain word", "Our list gives", "Times", "Pages", "Example line", "Decision"],
-               [[i["form"], i["plain"], i["gives"], i["times"], i["where"], i["line"], _label(i, dec(i))]
-                for i in s["unmarked"]], [22, 16, 20, 7, 14, 60, 18])
-        _sheet(wb, "4 Style only", "The same word, typed differently in the document (fixed automatically).",
-               ["In the document", "Plain word", "Times", "Pages", "Example line", "Our list gives", "Difference",
-                "Decision"],
-               [[i["form"], i["plain"], i["times"], i["where"], i["line"], i["gives"], i["why"], "Nothing to change"]
-                for i in s["style"]], [20, 16, 7, 12, 50, 20, 26, 18])
-        _sheet(wb, "5 Doubtful", "Look-alike letters or lines that came out garbled from the PDF (not compared).",
-               ["Word / page", "Times", "Pages", "Line", "What it is", "Decision"],
-               [[i["form"], i["times"], i["where"], i["line"], i["why"], "Not compared"] for i in s["doubtful"]],
-               [22, 7, 12, 60, 50, 14])
-        _sheet(wb, "6 Already in our list", "Exactly as our list gives them: nothing to do.",
-               ["In the document", "Plain word", "Times", "Pages", "Example line", "Our list gives"],
-               [[i["form"], i["plain"], i["times"], i["where"], i["line"], i["gives"]] for i in s["already"]],
-               [20, 16, 7, 12, 60, 20])
-    else:
-        _sheet(wb, "1 New", "In the file, not in our list.", ["Plain word", "Result in the file", "Shown as", "Row",
-                                                               "Decision"],
-               [[i["plain"], i["result"], describe(i["result"]), i["row"], _label(i, dec(i))] for i in s["lnew"]],
-               [20, 26, 30, 7, 14])
-        _sheet(wb, "2 Changed", "In both, with a different result.",
-               ["Plain word", "Our list", "The file", "Row", "Decision"],
-               [[i["plain"], describe(i["entry"]), describe(i["result"]), i["row"], _label(i, dec(i))]
-                for i in s["lchanged"]], [20, 30, 30, 7, 16])
-        _sheet(wb, "3 Missing from the file", "In our list but not in the file: kept unless Delete was chosen.",
-               ["Plain word", "Our list", "Decision"],
-               [[i["plain"], describe(i["entry"]), _label(i, dec(i))] for i in s["lmissing"]], [20, 30, 14])
-        _sheet(wb, "4 Problems", "Rows of the file that were skipped.", ["Row", "Plain word", "Result", "Why"],
-               [[i["row"], i["plain"], i["result"], i["why"]] for i in s["problems"]], [7, 20, 26, 50])
-        _sheet(wb, "5 Left empty", "Rows with a plain word but no result (e.g. not answered yet): left out.",
-               ["Row", "Plain word"], [[i["row"], i["plain"]] for i in s.get("empty", [])], [7, 24])
-        _sheet(wb, "6 Unchanged", "The same in the file and in our list.", ["Plain word", "Result"],
-               [[i["plain"], i["result"]] for i in s["unchanged"]], [20, 30])
-    return _save(wb)
-
-
-SEEN = {"small": "in small letters",
-        "name": "always with a capital, also mid-sentence (a name or title?)",
-        "start": "with a capital only at the start of a sentence"}
-
-
-def list_xlsx(entries: list[dict]) -> bytes:
-    """The whole list in the layout Add words accepts back (plain_text, diacritic_text)."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Word list"
-    ws.append(["plain_text", "diacritic_text"])
-    for c in ws[1]:
-        c.font = Font(bold=True)
-    for e in sorted(entries, key=lambda e: e["plain_text"]):
-        ws.append([e["plain_text"], e["diacritic_text"]])
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 40
-    ws.freeze_panes = "A2"
-    return _save(wb)
-
-
-def pending_xlsx(items: list[dict], when) -> bytes:
-    """The open pending items for the Diacriticals team, with an empty "Team's answer" column. The answered sheet can
-    be uploaded on Add words (as an offline list)."""
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Pending"
-    ws.append(["Plain word", "Suggested", "Shown as", "Why", "Source", "Page", "Example line", "Added",
-               "Team's answer"])
-    for c in ws[1]:
-        c.font, c.fill = Font(bold=True), PatternFill("solid", fgColor="DDE7F3")
-    for i in items:
-        ws.append([i["plain_text"], i["suggested"], describe(i["suggested"] or ""), i["reason"], i["source"],
-                   i["page"], i["context"], when(i["added_at"]), ""])
-    for col, w in zip("ABCDEFGHI", (18, 22, 24, 40, 24, 10, 50, 18, 24)):
-        ws.column_dimensions[col].width = w
-    for row in ws.iter_rows(min_row=2):
-        for c in row:
-            c.alignment = Alignment(wrap_text=True, vertical="top")
-    ws.freeze_panes = "A2"
-    return _save(wb)

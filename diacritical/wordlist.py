@@ -1,5 +1,6 @@
-"""The Diacritical word list as the dashboard (admin_words.py) changes it: the list table, reviews, change batches with
-undo, and the pending list. Plain psycopg 3 (sync; the pages call it through asyncio.to_thread).
+"""The Diacritical word list as the dashboard (admin_words.py) changes it: the list table, uploads (reviews) and the
+decisions read from their filled reports, change batches with undo, and the pending list. Plain psycopg 3 (sync; the
+pages call it through asyncio.to_thread).
 
 Which list: env DIACRITICAL_WORDS_LIST = "trial" (default) or "live".
   trial -> table diacritic_mappings_trial, a copy of the real list made on first use (same columns, own ids kept,
@@ -8,32 +9,35 @@ Which list: env DIACRITICAL_WORDS_LIST = "trial" (default) or "live".
 The database is DIACRITICAL_DATABASE_URL (never ChitrapurGPT's DATABASE_URL; same guard as diacritical_mount.py).
 
 Support tables (created if missing; every row has list_name 'trial' or 'live', so the two never mix):
-  dia_review   an upload's review: its items (harvest.review_document / review_list), the choices, its status
-  dia_batch    one change to the list (kind review | edit | pending | undo | reset), who and when, undone or not
+  dia_review   an upload (kind document | list) with its items (harvest.review_document / review_list), or a filled
+               pending list (kind pending); 'decisions' holds what the uploaded decisions said until Apply;
+               status open | applied | undone | cancelled
+  dia_batch    one change to the list (kind review | pending | undo | reset), who and when, undone or not
   dia_change   the entries a batch changed, with the values before and after (what undo puts back)
-  dia_pending  words waiting for the Diacriticals team, until resolved
+  dia_pending  words waiting for the Diacriticals team (with notes), until resolved
 The old diacritic_mapping_changes table (used by the clean-up scripts) is never touched.
-Every write takes a per-list advisory lock, and checks the entries it changes against what the page showed.
+Every write takes a per-list advisory lock; Apply works out its plan again under the lock against the list as it is
+then, and refuses if that isn't what the confirm page showed (sheets.fingerprint).
 """
 from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from datetime import timedelta, timezone
 
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from . import harvest
-from .cleaning import clean_plain, clean_result
-from .diacritics import translate_text
+from . import harvest, sheets
 
 LIVE_TABLE = "diacritic_mappings"
 TRIAL_TABLE = "diacritic_mappings_trial"
 _SCHEMA_LOCK = 727275
 _WRITE_LOCK = 727276
 NOW = "(now() at time zone 'utc')"
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 class NotConfigured(Exception):
@@ -44,12 +48,8 @@ class WordListError(Exception):
     """Something the person needs to know (the message is for people); nothing was changed."""
 
 
-class Conflict(WordListError):
-    """Entries changed since the review or form was made. words: [(plain word, what it is now or None)]."""
-    def __init__(self, words):
-        self.words = words
-        listed = ", ".join(w for w, _ in words[:20]) + (" …" if len(words) > 20 else "")
-        super().__init__(f"Some words were changed in the list since this was made: {listed}")
+class Changed(WordListError):
+    """The list or the pending list changed after the confirm page was shown: nothing was applied."""
 
 
 def list_name(environ=os.environ) -> str:
@@ -114,6 +114,8 @@ def ensure_tables(conn, name: str) -> None:
           context text NOT NULL DEFAULT '', added_by text, added_at timestamp NOT NULL DEFAULT {NOW},
           resolved_by text, resolved_at timestamp, resolution text, review_id int);
         CREATE INDEX IF NOT EXISTS dia_pending_plain ON dia_pending(list_name, plain_text);
+        ALTER TABLE dia_pending ADD COLUMN IF NOT EXISTS notes text NOT NULL DEFAULT '';
+        ALTER TABLE dia_pending ADD COLUMN IF NOT EXISTS resolved_batch int;
     """)
     if name == "trial" and not _exists(conn, TRIAL_TABLE):
         conn.execute(sql.SQL("""
@@ -149,14 +151,6 @@ def entries(conn, name: str) -> list[dict]:
 def mappings(conn, name: str) -> dict[str, str]:
     return {r["plain_text"]: r["diacritic_text"] for r in
             conn.execute(sql.SQL("SELECT plain_text, diacritic_text FROM {}").format(_t(name)))}
-
-
-def entry(conn, name: str, entry_id: int) -> dict | None:
-    return conn.execute(sql.SQL("SELECT * FROM {} WHERE id = %s").format(_t(name)), (entry_id,)).fetchone()
-
-
-def entry_by_plain(conn, name: str, plain: str) -> dict | None:
-    return conn.execute(sql.SQL("SELECT * FROM {} WHERE plain_text = %s").format(_t(name)), (plain,)).fetchone()
 
 
 def pending_count(conn, name: str) -> int:
@@ -216,185 +210,189 @@ def _locked(conn, name: str, *, entry_id=None, plain=None) -> dict | None:
                         (plain,)).fetchone()
 
 
-def _resolve_pending(conn, name: str, plains, by: str, resolution: str) -> int:
+def _resolve_pending(conn, name: str, plains, by: str, resolution: str, batch: int) -> int:
     if not plains:
         return 0
-    return conn.execute(f"UPDATE dia_pending SET resolved_by = %s, resolved_at = {NOW}, resolution = %s "
-                        "WHERE list_name = %s AND resolved_at IS NULL AND plain_text = ANY(%s)",
-                        (by, resolution, name, list(plains))).rowcount
+    return conn.execute(f"UPDATE dia_pending SET resolved_by = %s, resolved_at = {NOW}, resolution = %s, "
+                        "resolved_batch = %s WHERE list_name = %s AND resolved_at IS NULL AND plain_text = ANY(%s)",
+                        (by, resolution, batch, name, list(plains))).rowcount
 
 
-def save_entry(conn, name: str, by: str, *, plain: str, result: str, entry_id: int | None = None,
-               expected: tuple[str, str] | None = None, pending_id: int | None = None) -> int:
-    """Add an entry (entry_id None) or change one, as one batch. expected: (plain, result) the form showed; if the
-    entry changed since, nothing is saved (Conflict). Saving from a pending item resolves it. Returns the batch id."""
-    plain, result = clean_plain(plain), clean_result(result)
-    if not plain or not result:
-        raise WordListError("Please fill in the plain word and the result.")
-    _lock(conn, name)
-    other = _locked(conn, name, plain=plain)
-    if other and other["id"] != entry_id:
-        raise WordListError(f"“{plain}” is already in the list (as {harvest.describe(other['diacritic_text'])}).")
-    kind = "pending" if pending_id else "edit"
-    if entry_id is None:
-        batch = _new_batch(conn, name, kind, by, f"Added {plain} → {harvest.describe(result)}")
-        _add(conn, name, batch, plain, result)
-    else:
-        row = _locked(conn, name, entry_id=entry_id)
-        if row is None:
-            raise WordListError("This entry was deleted meanwhile. Nothing was saved.")
-        if expected and (row["plain_text"], row["diacritic_text"]) != expected:
-            raise Conflict([(row["plain_text"], row["diacritic_text"])])
-        if (row["plain_text"], row["diacritic_text"]) == (plain, result):
-            raise WordListError("Nothing was changed.")
-        what = (f"Changed {plain}: {harvest.describe(row['diacritic_text'])} → {harvest.describe(result)}"
-                if row["plain_text"] == plain else f"Changed {row['plain_text']} → {plain} ({harvest.describe(result)})")
-        batch = _new_batch(conn, name, kind, by, what)
-        _update(conn, name, batch, row, plain, result)
-    resolved = {plain}
-    if pending_id:
-        item = conn.execute("SELECT plain_text FROM dia_pending WHERE id = %s AND list_name = %s",
-                            (pending_id, name)).fetchone()
-        if item:
-            resolved.add(item["plain_text"])
-            conn.execute(f"UPDATE dia_pending SET resolved_by = %s, resolved_at = {NOW}, resolution = %s "
-                         "WHERE id = %s AND resolved_at IS NULL", (by, f"saved in the list (change {batch})",
-                                                                   pending_id))
-    _resolve_pending(conn, name, resolved, by, f"saved in the list (change {batch})")
-    return batch
-
-
-def delete_entry(conn, name: str, by: str, entry_id: int, expected: tuple[str, str] | None = None) -> int:
-    _lock(conn, name)
-    row = _locked(conn, name, entry_id=entry_id)
-    if row is None:
-        raise WordListError("This entry was already deleted.")
-    if expected and (row["plain_text"], row["diacritic_text"]) != expected:
-        raise Conflict([(row["plain_text"], row["diacritic_text"])])
-    batch = _new_batch(conn, name, "edit", by, f"Deleted {row['plain_text']} ({harvest.describe(row['diacritic_text'])})")
-    _delete(conn, name, batch, row)
-    return batch
-
-
-# ---------- reviews ----------
+# ---------- uploads, decisions and Apply ----------
 
 def create_review(conn, name: str, kind: str, title: str, files: list[dict], by: str, items: dict) -> int:
-    decisions = harvest.default_decisions(items)
-    return conn.execute("INSERT INTO dia_review (list_name, kind, title, files, created_by, items, decisions) "
-                        "VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-                        (name, kind, title, Jsonb(files), by, Jsonb(items), Jsonb(decisions))).fetchone()["id"]
+    return conn.execute("INSERT INTO dia_review (list_name, kind, title, files, created_by, items) "
+                        "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                        (name, kind, title, Jsonb(files), by, Jsonb(items))).fetchone()["id"]
 
 
 def get_review(conn, name: str, review_id: int) -> dict | None:
-    return conn.execute("SELECT * FROM dia_review WHERE id = %s AND list_name = %s", (review_id, name)).fetchone()
+    return conn.execute("SELECT r.*, b.undone_at FROM dia_review r LEFT JOIN dia_batch b ON b.id = r.batch_id "
+                        "WHERE r.id = %s AND r.list_name = %s", (review_id, name)).fetchone()
 
 
-def reviews(conn, name: str, status: str, limit: int = 50) -> list[dict]:
-    return conn.execute("SELECT id, kind, title, files, created_by, created_at, status, accepted_by, accepted_at, "
-                        "batch_id, items->'counts' AS counts FROM dia_review WHERE list_name = %s AND status = %s "
-                        "ORDER BY id DESC LIMIT %s", (name, status, limit)).fetchall()
+def uploads(conn, name: str, limit: int = 30) -> list[dict]:
+    """Recent uploads of documents and lists (newest first), with whether decisions are waiting to be applied."""
+    return conn.execute("""
+        SELECT r.id, r.kind, r.title, r.files, r.created_by, r.created_at, r.status, r.accepted_at, r.updated_at,
+               r.batch_id, r.items->'counts' AS counts, r.decisions <> '{}'::jsonb AS decided, b.undone_at
+        FROM dia_review r LEFT JOIN dia_batch b ON b.id = r.batch_id
+        WHERE r.list_name = %s AND r.kind IN ('document', 'list') ORDER BY r.id DESC LIMIT %s""",
+                        (name, limit)).fetchall()
 
 
-def save_decisions(conn, name: str, review_id: int, decisions: dict) -> None:
-    n = conn.execute(f"UPDATE dia_review SET decisions = %s, updated_at = {NOW} "
-                     "WHERE id = %s AND list_name = %s AND status = 'open'",
-                     (Jsonb(decisions), review_id, name)).rowcount
-    if not n:
-        raise WordListError("This review is already finished, so its choices can't be changed.")
+def _day(t) -> str:
+    """A database time (UTC) as an IST date: '20 Nov 2026'."""
+    return t.replace(tzinfo=timezone.utc).astimezone(IST).strftime("%-d %b %Y") if t else ""
 
 
-def discard_review(conn, name: str, review_id: int, by: str) -> None:
-    n = conn.execute(f"UPDATE dia_review SET status = 'discarded', accepted_by = %s, accepted_at = {NOW} "
-                     "WHERE id = %s AND list_name = %s AND status = 'open'", (by, review_id, name)).rowcount
-    if not n:
-        raise WordListError("This review is already finished.")
+def applied_note(rv: dict) -> str:
+    note = f"These decisions were already applied on {_day(rv['accepted_at'])}"
+    if rv.get("undone_at"):
+        note += f" (and undone on {_day(rv['undone_at'])})"
+    return note + ". To decide again, upload the document again for a new report."
 
 
-def accept_review(conn, name: str, review_id: int, by: str) -> dict:
-    """Apply the review's choices in one transaction: changes to the list (a 'review' batch with its change rows),
-    new pending items, and pending items resolved by the change. Each entry is checked against the review's snapshot
-    first; if any changed meanwhile, nothing is applied (Conflict). Returns {'batch', 'plan', 'resolved'}."""
+def store_report_answers(conn, name: str, filled: dict, by: str, file_name: str) -> int:
+    """Read a filled report's decisions and keep them on its review (a new upload replaces them). Returns the review
+    id. WordListError (for people) if the report doesn't belong here or was already applied."""
+    rv = conn.execute("SELECT * FROM dia_review WHERE id = %s FOR UPDATE", (filled["review"],)).fetchone() \
+        if filled.get("review") else None
+    if rv is None or rv["kind"] not in ("document", "list"):
+        raise WordListError("This report doesn't belong to any upload here (perhaps it was made on another copy of "
+                            "the dashboard). Please download the report again from “Your uploads”.")
+    if rv["list_name"] != name or filled.get("list") != name:
+        raise WordListError(_other_list(filled.get("list") or rv["list_name"]))
+    made = filled.get("made") or ""
+    if made and made != rv["created_at"].isoformat(timespec="seconds"):
+        raise WordListError("This report doesn't match upload " + str(rv["id"]) + " here (perhaps it was made on "
+                            "another copy of the dashboard). Please download the report again from “Your uploads”.")
+    if rv["status"] != "open":
+        full = get_review(conn, rv["list_name"], rv["id"])
+        raise WordListError(applied_note(full) if rv["status"] in ("applied", "undone") else
+                            "This upload is closed, so its decisions can't be applied.")
+    answers = sheets.answers_from_report(rv["items"], filled)
+    answers.update(file=file_name, by=by, kind="report")
+    conn.execute(f"UPDATE dia_review SET decisions = %s, updated_at = {NOW} WHERE id = %s",
+                 (Jsonb(answers), rv["id"]))
+    return rv["id"]
+
+
+def store_pending_answers(conn, name: str, filled: dict, by: str, file_name: str) -> int:
+    """Keep a filled pending list's rows as a 'pending' upload until Apply. Returns its id."""
+    if filled["list"] != name:
+        raise WordListError(_other_list(filled["list"]))
+    answers = sheets.answers_from_pending(filled) | {"file": file_name, "by": by, "kind": "pending"}
+    return conn.execute("INSERT INTO dia_review (list_name, kind, title, files, created_by, items, decisions) "
+                        "VALUES (%s, 'pending', %s, %s, %s, '{}', %s) RETURNING id",
+                        (name, "Pending list answers", Jsonb([{"name": file_name}]), by, Jsonb(answers))
+                        ).fetchone()["id"]
+
+
+def _other_list(made_on: str) -> str:
+    if made_on == "trial":
+        return ("This file was made on the trial copy of the list, but the dashboard now works on the real list. "
+                "Please upload the document again for a new report.")
+    return ("This file was made on the real list, but this dashboard works on the trial copy. Please upload it on the "
+            "real dashboard.")
+
+
+def cancel(conn, name: str, review_id: int) -> None:
+    """Cancel on the confirm page: a report's uploaded decisions are forgotten (the upload waits for decisions
+    again); a pending-list upload is closed."""
+    rv = conn.execute("SELECT kind, status FROM dia_review WHERE id = %s AND list_name = %s FOR UPDATE",
+                      (review_id, name)).fetchone()
+    if rv is None or rv["status"] != "open":
+        return
+    if rv["kind"] == "pending":
+        conn.execute(f"UPDATE dia_review SET status = 'cancelled', updated_at = {NOW} WHERE id = %s", (review_id,))
+    else:
+        conn.execute(f"UPDATE dia_review SET decisions = '{{}}', updated_at = {NOW} WHERE id = %s", (review_id,))
+
+
+def plan_for(conn, name: str, rv: dict) -> dict:
+    """What Apply would do now (sheets.plan / plan_pending against the list and pending list as they are), with
+    'pending_new' (items not already waiting), 'pending_off' (open pending items it answers or removes) and
+    'fingerprint'."""
+    current = mappings(conn, name)
+    open_rows = pending(conn, name)
+    answers = rv["decisions"] or {}
+    if rv["kind"] == "pending":
+        p = sheets.plan_pending(answers, {r["id"]: r for r in open_rows}, current)
+    else:
+        source = ", ".join(f["name"] for f in rv["files"]) + f" (upload {rv['id']})"
+        p = sheets.plan(rv["items"], answers, current, source)
+    waiting = {(r["plain_text"], r["suggested"]) for r in open_rows}
+    new, seen = [], set()
+    for x in p["pending"]:
+        if (x["plain"], x["suggested"]) not in waiting | seen:
+            new.append(x)
+            seen.add((x["plain"], x["suggested"]))
+    p["pending_new"] = new
+    p["pending_already"] = len(p["pending"]) - len(new)
+    touched = {c["plain"] for k in ("add", "update") for c in p[k]} | set(p["resolve"])
+    off = {r["id"] for r in open_rows if r["plain_text"] in touched} | set(p.get("remove", [])) | set(p.get("done", []))
+    p["pending_off"] = len(off)
+    p["fingerprint"] = sheets.fingerprint(p)
+    return p
+
+
+def apply(conn, name: str, review_id: int, by: str, fingerprint: str) -> dict:
+    """Apply an upload's decisions in one transaction: the changes to the list (a batch with its change rows), new
+    pending items, pending items answered, removed or with new notes. The plan is worked out again under the lock;
+    if it isn't what the confirm page showed (fingerprint), nothing is applied (Changed). Returns {'batch', 'plan'}."""
     _lock(conn, name)
     rv = conn.execute("SELECT * FROM dia_review WHERE id = %s AND list_name = %s FOR UPDATE",
                       (review_id, name)).fetchone()
-    if rv is None or rv["status"] != "open":
-        raise WordListError("This review is already finished.")
-    source = ", ".join(f["name"] for f in rv["files"]) + f" (review {review_id})"
-    p = harvest.plan(rv["items"], rv["decisions"], source)
-    if p["undecided"]:
-        raise WordListError(f"{len(p['undecided'])} rows still need a choice.")
-    if p["clashing"]:
-        raise WordListError("Two rows want to change the same word differently: " + ", ".join(p["clashing"]))
-    rows, conflicts = {}, []
-    for op in ("update", "delete"):
-        for c in p[op]:
-            row = _locked(conn, name, plain=c["plain"])
-            if row is None or row["diacritic_text"] != c["old"]:
-                conflicts.append((c["plain"], row["diacritic_text"] if row else None))
-            rows[c["plain"]] = row
-    for c in p["add"]:
-        row = _locked(conn, name, plain=c["plain"])
-        if row is not None:
-            conflicts.append((c["plain"], row["diacritic_text"]))
-    if conflicts:
-        raise Conflict(conflicts)
-    parts = [f"{len(p[k])} {label}" for k, label in (("add", "added"), ("update", "changed"), ("delete", "deleted"),
-                                                    ("pending", "sent to pending")) if p[k]]
-    batch = _new_batch(conn, name, "review", by, f"Review {review_id} ({rv['title']}): "
-                       + (", ".join(parts) if parts else "nothing changed"), review_id=review_id)
+    if rv is None or rv["status"] != "open" or not rv["decisions"]:
+        raise WordListError("There is nothing waiting to be applied here (perhaps it was applied or cancelled "
+                            "already).")
+    p = plan_for(conn, name, rv)
+    if p["fingerprint"] != fingerprint:
+        raise Changed("The word list or the pending list changed after this page was shown, so nothing was applied. "
+                      "Please check the summary again.")
+    pending_upload = rv["kind"] == "pending"
+    parts = [f"{len(p[k])} {label}" for k, label in (("add", "added"), ("update", "changed"), ("delete", "deleted"))
+             if p[k]]
+    if p["pending_new"]:
+        parts.append(f"{len(p['pending_new'])} put on the pending list")
+    if p.get("remove"):
+        parts.append(f"{len(p['remove'])} removed from the pending list")
+    what = ", ".join(parts) if parts else "nothing changed in the list"
+    title = (f"Pending list answers ({rv['files'][0]['name']})" if pending_upload else
+             f"Report {review_id} ({rv['title']})")
+    batch = _new_batch(conn, name, "pending" if pending_upload else "review", by, f"{title}: {what}",
+                       review_id=review_id)
     for c in p["delete"]:
-        _delete(conn, name, batch, rows[c["plain"]])
+        _delete(conn, name, batch, _locked(conn, name, plain=c["plain"]))
     for c in p["update"]:
-        _update(conn, name, batch, rows[c["plain"]], c["plain"], c["result"])
+        _update(conn, name, batch, _locked(conn, name, plain=c["plain"]), c["plain"], c["result"])
     for c in p["add"]:
         _add(conn, name, batch, c["plain"], c["result"])
-    open_pending = {(r["plain_text"], r["suggested"]) for r in conn.execute(
-        "SELECT plain_text, suggested FROM dia_pending WHERE list_name = %s AND resolved_at IS NULL", (name,))}
     changed = {c["plain"] for k in ("add", "update") for c in p[k]}
-    resolved = _resolve_pending(conn, name, changed, by, f"added or changed in review {review_id}")
-    resolved += _resolve_pending(conn, name, set(p["resolve"]) - changed, by,
-                                 f"confirmed as it is in review {review_id}")
+    where = "the pending list" if pending_upload else f"report {review_id}"
+    _resolve_pending(conn, name, changed, by, f"added or changed from {where} (change {batch})", batch)
+    _resolve_pending(conn, name, set(p["resolve"]) - changed, by, f"confirmed as it is in {where}", batch)
+    for pid in p.get("remove", []):
+        conn.execute(f"UPDATE dia_pending SET resolved_by = %s, resolved_at = {NOW}, resolution = 'removed', "
+                     "resolved_batch = %s WHERE id = %s AND list_name = %s AND resolved_at IS NULL",
+                     (by, batch, pid, name))
+    for pid, notes in (p.get("notes") or {}).items():
+        conn.execute("UPDATE dia_pending SET notes = %s WHERE id = %s AND list_name = %s", (notes, int(pid), name))
     for item in p["pending"]:
-        if (item["plain"], item["suggested"]) in open_pending:
-            continue  # already waiting, with the same suggestion
-        conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason, source, page, context, "
-                     "added_by, review_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+        if item not in p["pending_new"] and item.get("notes"):   # already waiting: its notes get the new remark
+            conn.execute("UPDATE dia_pending SET notes = CASE WHEN notes = '' THEN %s ELSE notes || ' · ' || %s END "
+                         "WHERE list_name = %s AND plain_text = %s AND suggested = %s AND resolved_at IS NULL "
+                         "AND position(%s in notes) = 0",
+                         (item["notes"], item["notes"], name, item["plain"], item["suggested"], item["notes"]))
+    for item in p["pending_new"]:
+        conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason, source, page, context, notes, "
+                     "added_by, review_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                      (name, item["plain"], item["suggested"], item["reason"], item["source"], item["page"],
-                      item["context"], by, review_id))
-        open_pending.add((item["plain"], item["suggested"]))
-    conn.execute(f"UPDATE dia_review SET status = 'accepted', accepted_by = %s, accepted_at = {NOW}, batch_id = %s "
+                      item["context"], item.get("notes") or "", by, review_id))
+    conn.execute(f"UPDATE dia_review SET status = 'applied', accepted_by = %s, accepted_at = {NOW}, batch_id = %s "
                  "WHERE id = %s", (by, batch, review_id))
-    return {"batch": batch, "plan": p, "resolved": resolved}
-
-
-def refresh_review(conn, name: str, review_id: int, words: list[tuple[str, str | None]]) -> None:
-    """After a Conflict: the rows for these words get the list's current value, a note, and their choice cleared, so
-    they are decided again."""
-    rv = conn.execute("SELECT items, decisions FROM dia_review WHERE id = %s AND list_name = %s FOR UPDATE",
-                      (review_id, name)).fetchone()
-    if rv is None:
-        return
-    now = dict(words)
-    items, decisions = rv["items"], rv["decisions"]
-    current = mappings(conn, name)
-    for section in items["sections"].values():
-        for item in section:
-            if item.get("plain") not in now or "id" not in item:
-                continue
-            value = now[item["plain"]]
-            item["changed_meanwhile"] = harvest.describe(value) if value else "deleted"
-            if "entry" in item:
-                item["entry"] = value
-            if item.get("kind") == "clash":
-                typed = harvest.plain_typed(item["form"])
-                item["gives"] = translate_text(typed, current)
-            if item.get("kind") in ("new", "lnew") and value is not None:
-                item["now_in_list"] = value
-            d = decisions.get(item["id"]) or {}
-            d.pop("choice", None)
-            decisions[item["id"]] = d
-    conn.execute(f"UPDATE dia_review SET items = %s, decisions = %s, updated_at = {NOW} WHERE id = %s",
-                 (Jsonb(items), Jsonb(decisions), review_id))
+    return {"batch": batch, "plan": p}
 
 
 # ---------- pending ----------
@@ -405,19 +403,6 @@ def pending(conn, name: str, *, resolved: bool = False, limit: int = 2000) -> li
                             "ORDER BY resolved_at DESC LIMIT %s", (name, limit)).fetchall()
     return conn.execute("SELECT * FROM dia_pending WHERE list_name = %s AND resolved_at IS NULL "
                         "ORDER BY plain_text, id", (name,)).fetchall()
-
-
-def pending_item(conn, name: str, item_id: int) -> dict | None:
-    return conn.execute("SELECT * FROM dia_pending WHERE id = %s AND list_name = %s", (item_id, name)).fetchone()
-
-
-def remove_pending(conn, name: str, item_id: int, by: str) -> str:
-    row = conn.execute(f"UPDATE dia_pending SET resolved_by = %s, resolved_at = {NOW}, resolution = 'removed' "
-                       "WHERE id = %s AND list_name = %s AND resolved_at IS NULL RETURNING plain_text",
-                       (by, item_id, name)).fetchone()
-    if row is None:
-        raise WordListError("That word is no longer on the pending list.")
-    return row["plain_text"]
 
 
 # ---------- history and undo ----------
@@ -440,8 +425,9 @@ def changes(conn, batch_id: int) -> list[dict]:
 
 
 def undo(conn, name: str, batch_id: int, by: str) -> int:
-    """Put back what a batch changed, as a new 'undo' batch, in one transaction. Refused (WordListError naming the
-    words) if any of its entries was changed again since."""
+    """Put back what a batch changed, as a new 'undo' batch, in one transaction; the pending words it answered go back
+    on the pending list (words it put on the pending list stay there). Refused (WordListError naming the words) if
+    any of its entries was changed again since."""
     _lock(conn, name)
     b = conn.execute("SELECT * FROM dia_batch WHERE id = %s AND list_name = %s FOR UPDATE",
                      (batch_id, name)).fetchone()
@@ -477,12 +463,17 @@ def undo(conn, name: str, batch_id: int, by: str) -> int:
         else:
             _add(conn, name, new, c["old_plain"], c["old_result"], entry_id=c["mapping_id"])
     conn.execute(f"UPDATE dia_batch SET undone_by = %s, undone_at = {NOW} WHERE id = %s", (by, batch_id))
+    conn.execute("UPDATE dia_pending SET resolved_at = NULL, resolved_by = NULL, resolution = NULL, "
+                 "resolved_batch = NULL WHERE list_name = %s AND resolved_batch = %s", (name, batch_id))
+    if b["review_id"]:
+        conn.execute(f"UPDATE dia_review SET status = 'undone', updated_at = {NOW} "
+                     "WHERE id = %s AND status = 'applied'", (b["review_id"],))
     return new
 
 
 def reset_trial(conn, by: str) -> int:
     """Start the trial again: the trial copy becomes the real list again (logged as a 'reset' batch; earlier trial
-    changes can't be undone after it). The pending list and reviews are kept."""
+    changes can't be undone after it). The pending list and uploads are kept."""
     _lock(conn, "trial")
     conn.execute(sql.SQL("DELETE FROM {}").format(_t("trial")))
     n = _copy_live_to_trial(conn)
