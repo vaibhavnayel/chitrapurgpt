@@ -225,27 +225,43 @@ standalone list; the root `requirements.txt` is what's installed.
 ### Diacritical words dashboard (`/admin/words`)
 
 For ChitrapurGPT admins (Google sign-in, `ADMIN_EMAILS`; **Diacritical words** in the admin header). It maintains
-Diacritical's word list without codes: search, add and edit words with plain boxes (Normal, Always capital, Name,
-Choices; an "Advanced: stored code" box for entries the boxes can't show), and **Add words**: upload Word (.docx),
-PDF (read with pypdf) or .txt documents, or an offline list (.xlsx with plain/result columns found by their headers,
-or `plain,result` lines). Each upload becomes a review: different from our list, new words, written without marks,
-style only, doubtful, already in the list; one choice per row, then **Accept** applies it in one transaction (each
-word is checked against what the review showed first). Words can go to **Pending** (downloadable for the
-Diacriticals team; their answered sheet is uploaded back as a list), every change is in **History** with undo, the
-review report downloads as Excel, and **Try it** runs the translator on the list being worked on. Every saved entry
-goes through `diacritical/cleaning.py` (the house style). Code: `admin_words.py` (pages),
-`diacritical/harvest.py` (reading files, sorting words, what Accept does; no database),
-`diacritical/wordlist.py` (database).
+Diacritical's word list as an **Excel round trip**, on one page:
+
+1. **Upload a document**: Word (.docx), PDF (read with pypdf) or .txt, several at once for one report; or an offline
+   list (.xlsx with plain/result columns found by their headers, or `plain,result` lines). The upload appears under
+   **Your uploads** with **Download the report**.
+2. **The report** (`diacritical/sheets.py`): a *Start here* sheet (what to do, counts), then the sheets that need a
+   decision — *Different from our list*, *New words*, *Written without marks* — and read-only *Style only*,
+   *Doubtful*, *Already in our list*. Yellow drop-down columns: *Your decision* (blank = Pending), *Capital*, plus
+   *Correct spelling* and *Notes* (they go with the word to the pending list). A word the document spells two ways
+   has one row per spelling. A hidden *Ref* column and a hidden `_dashboard` sheet (report of upload N, trial or
+   live) let rows be sorted or deleted.
+3. **Upload your decisions**: the filled report (or the filled pending list). Values are read case-insensitively;
+   obvious free text ("Our list is correct. Always capitalised", "Keep on pending list") is read and listed; anything
+   else becomes Pending and is listed. A **confirm page** says what will happen in one sentence ("This will add 3
+   words, change 2, and put 130 on the pending list."), with before → after lists, rows it couldn't read and rows
+   skipped because the entry changed since the report was made. **Apply** changes the list in one transaction (the
+   plan is worked out again under a lock and must match what the page showed). A report can be applied once.
+4. **Pending list**: a rolling list, downloadable as Excel (*Your decision*: Add / Remove from pending; *Result*
+   pre-filled with the suggestion; *Capital*; *Notes*) and uploaded back the same way.
+5. **History** with Undo (the words go back; pending words that change answered go back on the pending list), the
+   whole list as Excel, and *Start the trial again* (trial only).
+
+Single words are changed on the old Mappings page. Every stored result goes through `diacritical/cleaning.py` (the
+house style). Code: `admin_words.py` (pages), `diacritical/harvest.py` (reading files, sorting words; no database),
+`diacritical/sheets.py` (the workbooks, reading them back, what Apply does; no database), `diacritical/wordlist.py`
+(database).
 
 | Env var | Used for |
 |---|---|
-| `DIACRITICAL_WORDS_LIST` | `trial` (default): work on `diacritic_mappings_trial`, a copy of the real list made on first use (a button on the Word list starts it again from the real list); the translator never reads it. `live`: work on the real `diacritic_mappings`, which the translator uses straight away. |
+| `DIACRITICAL_WORDS_LIST` | `trial` (default): work on `diacritic_mappings_trial`, a copy of the real list made on first use (*Start the trial again* copies it again); the translator never reads it. `live`: work on the real `diacritic_mappings`, which the translator uses straight away. |
 | `DIACRITICAL_DATABASE_URL` | the same database as Diacritical (never `DATABASE_URL`) |
 
-Every page says which list it is on. In that database it adds (if missing) `dia_review` (uploads and their choices),
-`dia_batch` and `dia_change` (each change with the values before and after, for undo) and `dia_pending`; each row
-has `list_name` (`trial`/`live`), so the two never mix. It doesn't touch the old Mappings page or the
-`diacritic_mapping_changes` table. Tests: `tests/test_words_harvest.py` (no database), and
+Every page says which list it is on; a report or pending list made on the trial copy is refused on the real list and
+the other way round. In that database it adds (if missing) `dia_review` (uploads, and the decisions read from their
+filled reports until Apply), `dia_batch` and `dia_change` (each change with the values before and after, for undo)
+and `dia_pending` (with notes); each row has `list_name` (`trial`/`live`), so the two never mix. It doesn't touch the
+old Mappings page or the `diacritic_mapping_changes` table. Tests: `tests/test_words_harvest.py` (no database), and
 `tests/test_words_db.py` / `tests/test_words_pages.py` with
 `WORDS_TEST_DATABASE_URL=postgresql://postgres@localhost:5433/postgres` (each test makes and drops its own database;
 skipped without it).
