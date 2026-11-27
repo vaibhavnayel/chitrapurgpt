@@ -23,7 +23,7 @@ import unicodedata
 from collections import Counter, defaultdict
 
 from .cleaning import clean_plain, clean_result
-from .diacritics import phrase_key, translate_text
+from .diacritics import CHOICE_COMMA, phrase_key, translate_text
 
 MAX_BYTES = 40 * 1024 * 1024
 DOCUMENT_ENDINGS = (".docx", ".pdf", ".txt")
@@ -79,7 +79,7 @@ def choices(output: str) -> list[str]:
     m = re.fullmatch(r"\{\{(.*)\}\}", output)
     if not m:
         return [output]
-    return [re.sub(r"\s*\(.*?\)", "", x).strip() for x in m.group(1).split(",")]
+    return [re.sub(r"\s*\(.*?\)", "", x).strip() for x in CHOICE_COMMA.split(m.group(1))]
 
 
 def list_letters(mappings: dict[str, str]) -> set[str]:
@@ -666,7 +666,8 @@ def replace_result(code: str | None, result: str, capitalised: bool) -> str:
 
 
 def split_choices(group: str) -> list[str]:
-    return [c for c in (re.sub(r"\s+", " ", x).strip() for x in (group or "").split(",")) if c]
+    # a comma inside a label's brackets, "āratī (hindi, marathi)", stays in its choice (as the translator)
+    return [c for c in (re.sub(r"\s+", " ", x).strip() for x in CHOICE_COMMA.split(group or "")) if c]
 
 
 def _capital(text: str) -> str:
@@ -678,7 +679,7 @@ def _capital_words(text: str) -> str:
 
 
 def describe(code: str) -> str:
-    """A stored code in words: 'Kṛs͟hṇa (always capital)', 'gŏḍ / as a name: God',
+    """A stored code in words: 'Kṛs͟hṇa (always capital)', 'gŏḍ / with a capital: God',
     'choice: nāmāvalī (hindi) or nāmāvaliḥ (sanskrit)'."""
     p = parse_code(code or "")
     if p is None:
@@ -694,7 +695,7 @@ def describe(code: str) -> str:
     if p["type"] == "capital":
         return f"{show(p['main'], _capital_words)} (always capital)"
     if p["type"] == "name":
-        return f"{show(p['main'])} / as a name: {show(p['name'], _capital)}"
+        return f"{show(p['main'])} / with a capital: {show(p['name'], _capital)}"
     return show(p["main"])
 
 

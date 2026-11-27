@@ -272,7 +272,7 @@ def test_codes_types_and_descriptions():
     assert harvest.replace_result("{{gŏḍ}}{{god}}", "gŏd", capitalised=True) == "{{gŏḍ}}{{gŏd}}"
     assert harvest.replace_result("{{}}{{kanarā}}", "kănarā", capitalised=True) == "{{}}{{kănarā}}"
     assert harvest.describe("{{}}{{kṛs͟hṇa}}") == "Kṛs͟hṇa (always capital)"
-    assert harvest.describe("{{gŏḍ}}{{god}}") == "gŏḍ / as a name: God"
+    assert harvest.describe("{{gŏḍ}}{{god}}") == "gŏḍ / with a capital: God"
     assert harvest.describe("{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}") == \
         "choice: nāmāvalī (hindi) or nāmāvaliḥ (sanskrit)"
     assert harvest.describe("{{}}{{kārtik, kārtika}}") == "choice: Kārtik or Kārtika (always capital)"
