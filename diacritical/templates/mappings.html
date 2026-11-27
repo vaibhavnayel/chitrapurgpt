@@ -32,10 +32,20 @@
             <label for="{{ p }}Choices">Choices</label>
             <textarea class="form-control" id="{{ p }}Choices" rows="3"></textarea>
             <small class="form-text text-muted">One spelling per line; a label in brackets is fine, e.g. nāmāvalī (hindi)</small>
-            <div class="custom-control custom-checkbox">
-                <input type="checkbox" class="custom-control-input" id="{{ p }}ChoicesCapital">
-                <label class="custom-control-label" for="{{ p }}ChoicesCapital">Always capital</label>
+            <label class="choices-cap-title">When typed with a capital:</label>
+            {% for value, title, help in [
+                ("same", "The same choices", "with a capital letter"),
+                ("always", "Always capital", "even when typed in small letters"),
+                ("name", "A name", "gives just this spelling:")] %}
+            <div class="custom-control custom-radio type-option">
+                <input type="radio" id="{{ p }}ChoicesCap-{{ value }}" name="{{ p }}ChoicesCap" value="{{ value }}"
+                       class="custom-control-input"{% if loop.first %} checked{% endif %}>
+                <label class="custom-control-label" for="{{ p }}ChoicesCap-{{ value }}"><strong>{{ title }}</strong>
+                    <span class="type-help">&ndash; {{ help }}</span></label>
             </div>
+            {% endfor %}
+            <input type="text" class="form-control choices-name" id="{{ p }}ChoicesName" autocomplete="off"
+                   placeholder="e.g. āratī" style="display: none;">
         </div>
     </div>
     <div class="what-it-gives">

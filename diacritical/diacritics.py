@@ -128,9 +128,14 @@ def _match_case_choice(word: str, choice: str) -> str:
     return match_case(word, text) + (label or "")
 
 
+# A comma between choices; a comma inside a label's brackets, "āratī (hindi, marathi)", stays in its choice.
+CHOICE_COMMA = re.compile(r",(?![^()]*\))")
+
+
 def handle_one_to_many_mappings(word: str, mapping: str) -> str:
     # Choices are separated by commas. Spaces inside a choice are kept (a phrase, or a label such as "(Hindi)").
-    diacritics = [re.sub(r"\s+", " ", d).strip() for d in mapping.replace("{{", "").replace("}}", "").split(",")]
+    diacritics = [re.sub(r"\s+", " ", d).strip()
+                  for d in CHOICE_COMMA.split(mapping.replace("{{", "").replace("}}", ""))]
     if len(diacritics) == 1:
         # single word should display without curly brackets
         return _match_case_choice(word, diacritics[0])

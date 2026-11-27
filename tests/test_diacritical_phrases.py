@@ -26,6 +26,7 @@ MAPPINGS = {
     "sandhya-vandana": "{{}}{{sandhyā-vandana}}",
     "one two three": "ōne twō thrēē",
     "one two": "ōne-twō",
+    "arati": "{{ārati (sanskrit), āratī (hindi, marathi)}}{{āratī}}",
 }
 
 
@@ -78,6 +79,12 @@ def test_a_stored_key_matches_however_its_hyphen_was_spaced():
 
 def test_labels_in_brackets_keep_their_capital():
     assert t("namavali Namavali") == "{{nāmāvalī (Hindi),nāmāvaliḥ (Sanskrit)}} {{Nāmāvalī (Hindi),Nāmāvaliḥ (Sanskrit)}}"
+
+
+def test_a_comma_inside_a_label_stays_in_its_choice():
+    # Shantish's arati: choices typed small, a name typed with a capital.
+    assert t("arati") == "{{ārati (sanskrit),āratī (hindi, marathi)}}"
+    assert t("Arati") == "Āratī"
 
 
 def test_text_typed_with_marks_is_matched_without_them():

@@ -33,8 +33,14 @@
         return splitChoiceLines(value).join('\n');
     }
 
+    // A comma between choices; a comma inside a label's brackets, "āratī (hindi, marathi)", stays in its choice
+    // (the same rule as CHOICE_COMMA in diacritics.py).
+    const CHOICE_COMMA = /,(?![^()]*\))/;
+
     function splitChoiceLines(value) {
-        return (value || '').split(/[\n,]/).map(cleanResult).filter(Boolean);
+        const lines = [];
+        (value || '').split('\n').forEach(function (line) { lines.push.apply(lines, line.split(CHOICE_COMMA)); });
+        return lines.map(cleanResult).filter(Boolean);
     }
 
     // ---------- reading a code ----------
@@ -59,12 +65,17 @@
     }
 
     function splitChoices(group) {
-        return (group || '').split(',').map(function (x) { return x.replace(/\s+/g, ' ').trim(); })
+        return (group || '').split(CHOICE_COMMA).map(function (x) { return x.replace(/\s+/g, ' ').trim(); })
             .filter(Boolean);
     }
 
     function emptyBoxes() {
-        return { type: 'normal', result: '', name: '', choices: [], capital: false, advanced: '' };
+        return { type: 'normal', result: '', name: '', choices: [], capital: false, choiceCap: 'same', advanced: '' };
+    }
+
+    function choiceCap(boxes) {
+        return boxes.choiceCap === 'name' || boxes.choiceCap === 'always' ? boxes.choiceCap
+            : (boxes.capital ? 'always' : 'same');
     }
 
     // The stored code (house style) for the boxes. A filled Advanced box wins.
@@ -78,8 +89,11 @@
         } else if (boxes.type === 'name') {
             code = '{{' + result + '}}{{' + (boxes.name || '').trim() + '}}';
         } else if (boxes.type === 'choices') {
+            // With a capital: the same choices (default), always capital, or a name ({{choices}}{{name}}).
             const inner = (boxes.choices || []).map(function (c) { return (c || '').trim(); }).filter(Boolean).join(', ');
-            code = boxes.capital ? '{{}}{{' + inner + '}}' : '{{' + inner + '}}';
+            const cap = choiceCap(boxes);
+            code = cap === 'always' ? '{{}}{{' + inner + '}}'
+                : cap === 'name' ? '{{' + inner + '}}{{' + (boxes.name || '').trim() + '}}' : '{{' + inner + '}}';
         } else if (boxes.type === 'advanced') {
             code = '';
         } else {
@@ -110,6 +124,7 @@
                     boxes.type = 'choices';
                     boxes.choices = main;
                     boxes.capital = true;
+                    boxes.choiceCap = 'always';
                 } else {
                     why = 'it is always capital but has no spelling';
                 }
@@ -118,6 +133,11 @@
                 if (main.length === 1 && names.length === 1) {
                     boxes.type = 'name';
                     boxes.result = main[0];
+                    boxes.name = names[0];
+                } else if (main.length > 1 && names.length === 1) {
+                    boxes.type = 'choices';
+                    boxes.choices = main;
+                    boxes.choiceCap = 'name';
                     boxes.name = names[0];
                 } else if (main.length > 1 || names.length > 1) {
                     why = 'it is a name with several spellings';
@@ -159,6 +179,11 @@
             }
             if (forSaving && choices.length < 2) {
                 out.push('Choices needs at least two spellings, one per line.');
+            }
+            if (choiceCap(boxes) === 'name') {
+                const asName = (boxes.name || '').trim();
+                if (/[{},]/.test(asName)) out.push('Please type the name without commas or {{ }}.');
+                if (forSaving && !asName) out.push('Please type the name: what it gives when typed with a capital.');
             }
             return out;
         }

@@ -32,7 +32,13 @@ const EXAMPLES = [
     ['{{gŏḍ}}{{god}}', { type: 'name', result: 'gŏḍ', name: 'god' }],
     ['{{abhis͟heka}}{{abhis͟hek}}', { type: 'name', result: 'abhis͟heka', name: 'abhis͟hek' }],
     ['{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}', { type: 'choices', choices: ['nāmāvalī (hindi)', 'nāmāvaliḥ (sanskrit)'] }],
-    ['{{}}{{kārtik, kārtika}}', { type: 'choices', choices: ['kārtik', 'kārtika'], capital: true }],
+    ['{{}}{{kārtik, kārtika}}', { type: 'choices', choices: ['kārtik', 'kārtika'], capital: true, choiceCap: 'always' }],
+    // Choices that give a name when typed with a capital (Shantish's arati), and a comma inside a label.
+    ['{{ārati (sanskrit), āratī (hindi, marathi)}}{{āratī}}',
+        { type: 'choices', choices: ['ārati (sanskrit)', 'āratī (hindi, marathi)'], choiceCap: 'name', name: 'āratī' }],
+    ['{{varsha, varshā}}{{varshā}}', { type: 'choices', choices: ['varsha', 'varshā'], choiceCap: 'name', name: 'varshā' }],
+    ['{{ārati (sanskrit), āratī (hindi, marathi)}}',
+        { type: 'choices', choices: ['ārati (sanskrit)', 'āratī (hindi, marathi)'] }],
     ['{{jñāta, jñātā, jñāti}}', { type: 'choices', choices: ['jñāta', 'jñātā', 'jñāti'] }],
     ['{{}}{{parijñānāshrama trayodashī}}', { type: 'capital', result: 'parijñānāshrama trayodashī' }],
 ];
@@ -61,8 +67,8 @@ test('broken brackets are repaired before reading', () => {
 
 // Codes the boxes can't show exactly stay as a code (Advanced), with a reason.
 const ADVANCED = [
-    ['{{varsha, varshā}}{{varshā}}', 'name with several spellings'],
-    ['{{nayaka, nayak}}{{nayak}}', 'name with several spellings'],
+    ['{{saṅgīta}}{{saṅgeetā, saṅgītā}}', 'name with several spellings'],
+    ['{{a, b}}{{c, d}}', 'name with several spellings'],
     ['{{a}}{{b}}{{c}}', 'brackets'],
     ['x{{y}}', 'brackets'],
     ['{{y}}x', 'brackets'],
@@ -84,6 +90,21 @@ for (const [code, why] of ADVANCED) {
         assert.strictEqual(M.boxesToCode(b), M.cleanResult(code));
     });
 }
+
+test('a comma inside a label stays in its choice', () => {
+    assert.deepStrictEqual(M.splitChoiceLines('ārati (sanskrit)\nāratī (hindi, marathi)'),
+        ['ārati (sanskrit)', 'āratī (hindi, marathi)']);
+    assert.deepStrictEqual(M.splitChoiceLines('a, b (x, y)'), ['a', 'b (x, y)']);
+    assert.strictEqual(M.describeCode('{{ārati (sanskrit), āratī (hindi, marathi)}}{{āratī}}', 'arati'),
+        'arati → ārati (sanskrit) or āratī (hindi, marathi), Arati → Āratī');
+});
+
+test('choices as a name need the name', () => {
+    const b = boxes({ type: 'choices', choices: ['a', 'b'], choiceCap: 'name', name: '' });
+    assert.ok(M.boxProblems(b, true).some((m) => m.includes('name')));
+    assert.deepStrictEqual(M.boxProblems(Object.assign(b, { name: 'b' }), true), []);
+    assert.strictEqual(M.boxesToCode(b), '{{a, b}}{{b}}');
+});
 
 test('problems in plain words', () => {
     const p = (over, saving = true) => M.boxProblems(boxes(over), saving);

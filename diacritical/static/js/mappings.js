@@ -172,7 +172,7 @@ const MappingsManager = (function() {
         const $result = $('#' + prefix + 'Result');
         const $name = $('#' + prefix + 'AsName');
         const $choices = $('#' + prefix + 'Choices');
-        const $capital = $('#' + prefix + 'ChoicesCapital');
+        const $choicesName = $('#' + prefix + 'ChoicesName');
         const $code = $(codeSelector);
         const $plain = $(plainSelector);
         const $advanced = $('#' + prefix + 'Advanced');
@@ -190,13 +190,23 @@ const MappingsManager = (function() {
             $('#' + prefix + 'Type-' + value).prop('checked', true);
         }
 
+        // Choices: with a capital the same choices, always capital, or a name.
+        function choiceCap() {
+            return $root.find('input[name="' + prefix + 'ChoicesCap"]:checked').val() || 'same';
+        }
+
+        function setChoiceCap(value) {
+            $('#' + prefix + 'ChoicesCap-' + (value || 'same')).prop('checked', true);
+        }
+
         function boxes() {
             return {
                 type: type(),
                 result: $result.val(),
-                name: $name.val(),
+                name: type() === 'choices' ? $choicesName.val() : $name.val(),
                 choices: Codes.splitChoiceLines($choices.val()),
-                capital: $capital.is(':checked'),
+                capital: choiceCap() === 'always',
+                choiceCap: choiceCap(),
                 advanced: advancedOpen ? $code.val() : ''
             };
         }
@@ -218,6 +228,7 @@ const MappingsManager = (function() {
             $root.find('.box-result').toggle(t !== 'choices');
             $root.find('.box-name').toggle(t === 'name');
             $root.find('.box-choices').toggle(t === 'choices');
+            $choicesName.toggle(t === 'choices' && choiceCap() === 'name');
             const b = boxes();
             const code = Codes.boxesToCode(b);
             const adv = usingAdvanced();
@@ -236,7 +247,7 @@ const MappingsManager = (function() {
             if (problems.length) {
                 $problems.text(problems.join('\n'));
                 const t = type();
-                const $first = t === 'choices' ? $choices
+                const $first = t === 'choices' ? (Codes.splitChoiceLines($choices.val()).length < 2 ? $choices : $choicesName)
                     : (!$result.val().trim() || /[{},]/.test($result.val()) || t !== 'name') ? $result : $name;
                 $first.focus();
             }
@@ -245,7 +256,7 @@ const MappingsManager = (function() {
 
         // Clean the boxes in place (as on leaving them) and give the code to save.
         function code() {
-            [$result, $name, $code].forEach(($el) => $el.val(cleanResult($el.val())));
+            [$result, $name, $choicesName, $code].forEach(($el) => $el.val(cleanResult($el.val())));
             $choices.val(Codes.cleanChoicesText($choices.val()));
             update();
             return Codes.boxesToCode(boxes());
@@ -256,7 +267,8 @@ const MappingsManager = (function() {
             $result.val('');
             $name.val('');
             $choices.val('');
-            $capital.prop('checked', false);
+            $choicesName.val('');
+            setChoiceCap('same');
             $code.val('');
         }
 
@@ -272,9 +284,13 @@ const MappingsManager = (function() {
             } else {
                 setType(b.type);
                 $result.val(b.result);
-                $name.val(b.name);
                 $choices.val(b.choices.join('\n'));
-                $capital.prop('checked', b.capital);
+                if (b.type === 'choices') {
+                    setChoiceCap(b.choiceCap);
+                    $choicesName.val(b.name);
+                } else {
+                    $name.val(b.name);
+                }
                 setAdvanced(false);
             }
             update();

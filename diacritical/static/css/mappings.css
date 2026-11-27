@@ -273,12 +273,14 @@
     line-height: 1.45;
 }
 
-.type-boxes .box-choices .custom-checkbox {
-    margin-top: 4px;
+.type-boxes .box-choices .choices-cap-title {
+    margin-top: 10px;
+    margin-bottom: 4px;
 }
 
-.type-boxes .box-choices .custom-control-label {
-    padding-left: 4px;
+.type-boxes .box-choices .choices-name {
+    margin: 2px 0 4px 26px;
+    max-width: 320px;
 }
 
 #mappingForm button[type="submit"] {
