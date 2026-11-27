@@ -8,9 +8,8 @@
         <div class="form-group type-choice">
             <label>Type:</label>
             {% for value, title, help in [
-                ("normal", "Normal", "follows how it's typed (krishna → kṛs͟hṇa, Krishna → Kṛs͟hṇa)"),
-                ("capital", "Always capital", "for places and names (always starts with a capital letter)"),
-                ("name", "Name", "different when typed with a capital (god → gŏḍ, but God → God)"),
+                ("normal", "Normal", "one spelling; a capital when typed with one (krishna → kṛs͟hṇa, Krishna → Kṛs͟hṇa)"),
+                ("capital", "Always capital", "always starts with a capital, however it's typed (kodial → Koḍiāl)"),
                 ("choices", "Choices", "two or more spellings, all shown")] %}
             <div class="custom-control custom-radio type-option">
                 <input type="radio" id="{{ p }}Type-{{ value }}" name="{{ p }}Type" value="{{ value }}"
@@ -24,28 +23,20 @@
             <label for="{{ p }}Result">Result <span class="box-hint">(the word with its marks)</span></label>
             <input type="text" class="form-control" id="{{ p }}Result" autocomplete="off">
         </div>
-        <div class="form-group box-name" style="display: none;">
-            <label for="{{ p }}AsName">As a name <span class="box-hint">(what it gives when typed with a capital)</span></label>
-            <input type="text" class="form-control" id="{{ p }}AsName" autocomplete="off">
-        </div>
         <div class="form-group box-choices" style="display: none;">
             <label for="{{ p }}Choices">Choices</label>
             <textarea class="form-control" id="{{ p }}Choices" rows="3"></textarea>
             <small class="form-text text-muted">One spelling per line; a label in brackets is fine, e.g. nāmāvalī (hindi)</small>
-            <label class="choices-cap-title">When typed with a capital:</label>
-            {% for value, title, help in [
-                ("same", "The same choices", "with a capital letter"),
-                ("always", "Always capital", "even when typed in small letters"),
-                ("name", "A name", "gives just this spelling:")] %}
-            <div class="custom-control custom-radio type-option">
-                <input type="radio" id="{{ p }}ChoicesCap-{{ value }}" name="{{ p }}ChoicesCap" value="{{ value }}"
-                       class="custom-control-input"{% if loop.first %} checked{% endif %}>
-                <label class="custom-control-label" for="{{ p }}ChoicesCap-{{ value }}"><strong>{{ title }}</strong>
-                    <span class="type-help">&ndash; {{ help }}</span></label>
+            <div class="custom-control custom-checkbox">
+                <input type="checkbox" class="custom-control-input" id="{{ p }}ChoicesCapital">
+                <label class="custom-control-label" for="{{ p }}ChoicesCapital">Always capital</label>
             </div>
-            {% endfor %}
-            <input type="text" class="form-control choices-name" id="{{ p }}ChoicesName" autocomplete="off"
-                   placeholder="e.g. āratī" style="display: none;">
+        </div>
+        <div class="form-group box-name">
+            <label for="{{ p }}AsName">Spelt differently when typed with a capital <span class="box-hint">(optional)</span></label>
+            <input type="text" class="form-control" id="{{ p }}AsName" autocomplete="off">
+            <small class="form-text text-muted">Leave empty for most words. Fill it only when the word with a capital has
+                its own spelling, e.g. god → gŏḍ, but God → God.</small>
         </div>
     </div>
     <div class="what-it-gives">
@@ -121,8 +112,8 @@
                 </div>
                 <div class="card-body">
                     <p class="text-muted">
-                        Add and Edit now write these codes for you: choose a Type. The codes below are what the
-                        table shows, and what the Advanced box takes.
+                        Add and Edit now write these codes for you: choose a Type (and, if needed, the spelling when typed with a
+                        capital). The codes below are what the table shows, and what the Advanced box takes.
                     </p>
                     <p>
                         <strong>One-to-one mapping:</strong><br>

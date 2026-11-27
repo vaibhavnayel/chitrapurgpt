@@ -29,14 +29,14 @@ const EXAMPLES = [
     ['aks͟haya', { type: 'normal', result: 'aks͟haya' }],
     ['kṛs͟hṇa', { type: 'normal', result: 'kṛs͟hṇa' }],
     ['{{}}{{koḍiāl}}', { type: 'capital', result: 'koḍiāl' }],
-    ['{{gŏḍ}}{{god}}', { type: 'name', result: 'gŏḍ', name: 'god' }],
-    ['{{abhis͟heka}}{{abhis͟hek}}', { type: 'name', result: 'abhis͟heka', name: 'abhis͟hek' }],
+    ['{{gŏḍ}}{{god}}', { type: 'normal', result: 'gŏḍ', name: 'god' }],
+    ['{{abhis͟heka}}{{abhis͟hek}}', { type: 'normal', result: 'abhis͟heka', name: 'abhis͟hek' }],
     ['{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}', { type: 'choices', choices: ['nāmāvalī (hindi)', 'nāmāvaliḥ (sanskrit)'] }],
-    ['{{}}{{kārtik, kārtika}}', { type: 'choices', choices: ['kārtik', 'kārtika'], capital: true, choiceCap: 'always' }],
+    ['{{}}{{kārtik, kārtika}}', { type: 'choices', choices: ['kārtik', 'kārtika'], capital: true }],
     // Choices that give a name when typed with a capital (Shantish's arati), and a comma inside a label.
     ['{{ārati (sanskrit), āratī (hindi, marathi)}}{{āratī}}',
-        { type: 'choices', choices: ['ārati (sanskrit)', 'āratī (hindi, marathi)'], choiceCap: 'name', name: 'āratī' }],
-    ['{{varsha, varshā}}{{varshā}}', { type: 'choices', choices: ['varsha', 'varshā'], choiceCap: 'name', name: 'varshā' }],
+        { type: 'choices', choices: ['ārati (sanskrit)', 'āratī (hindi, marathi)'], name: 'āratī' }],
+    ['{{varsha, varshā}}{{varshā}}', { type: 'choices', choices: ['varsha', 'varshā'], name: 'varshā' }],
     ['{{ārati (sanskrit), āratī (hindi, marathi)}}',
         { type: 'choices', choices: ['ārati (sanskrit)', 'āratī (hindi, marathi)'] }],
     ['{{jñāta, jñātā, jñāti}}', { type: 'choices', choices: ['jñāta', 'jñātā', 'jñāti'] }],
@@ -50,7 +50,7 @@ for (const [code, want] of EXAMPLES) {
 
 test('boxes are cleaned to the house style', () => {
     assert.strictEqual(M.boxesToCode(boxes({ type: 'normal', result: '  Kṛs̲h̲ṇa ' })), 'kṛs͟hṇa');
-    assert.strictEqual(M.boxesToCode(boxes({ type: 'name', result: ' Gŏḍ', name: 'God ' })), '{{gŏḍ}}{{god}}');
+    assert.strictEqual(M.boxesToCode(boxes({ type: 'normal', result: ' Gŏḍ', name: 'God ' })), '{{gŏḍ}}{{god}}');
     assert.strictEqual(M.boxesToCode(boxes({ type: 'choices', choices: [' a ', '', 'b  (Hindi)'] })), '{{a, b (hindi)}}');
 });
 
@@ -67,8 +67,8 @@ test('broken brackets are repaired before reading', () => {
 
 // Codes the boxes can't show exactly stay as a code (Advanced), with a reason.
 const ADVANCED = [
-    ['{{saṅgīta}}{{saṅgeetā, saṅgītā}}', 'name with several spellings'],
-    ['{{a, b}}{{c, d}}', 'name with several spellings'],
+    ['{{saṅgīta}}{{saṅgeetā, saṅgītā}}', 'several spellings for when'],
+    ['{{a, b}}{{c, d}}', 'several spellings for when'],
     ['{{a}}{{b}}{{c}}', 'brackets'],
     ['x{{y}}', 'brackets'],
     ['{{y}}x', 'brackets'],
@@ -99,11 +99,15 @@ test('a comma inside a label stays in its choice', () => {
         'arati → ārati (sanskrit) or āratī (hindi, marathi), Arati → Āratī');
 });
 
-test('choices as a name need the name', () => {
-    const b = boxes({ type: 'choices', choices: ['a', 'b'], choiceCap: 'name', name: '' });
-    assert.ok(M.boxProblems(b, true).some((m) => m.includes('name')));
-    assert.deepStrictEqual(M.boxProblems(Object.assign(b, { name: 'b' }), true), []);
-    assert.strictEqual(M.boxesToCode(b), '{{a, b}}{{b}}');
+test('the capital spelling box is optional, and ignored when always capital', () => {
+    const b = boxes({ type: 'choices', choices: ['a', 'b'], name: '' });
+    assert.deepStrictEqual(M.boxProblems(b, true), []);
+    assert.strictEqual(M.boxesToCode(b), '{{a, b}}');
+    assert.strictEqual(M.boxesToCode(Object.assign(b, { name: 'b' })), '{{a, b}}{{b}}');
+    assert.strictEqual(M.boxesToCode(Object.assign(b, { capital: true })), '{{}}{{a, b}}');
+    assert.strictEqual(M.boxesToCode(boxes({ type: 'capital', result: 'x', name: 'y' })), '{{}}{{x}}');
+    assert.strictEqual(M.boxesToCode(boxes({ type: 'normal', result: 'x', name: '' })), 'x');
+    assert.strictEqual(M.boxesToCode(boxes({ type: 'name', result: 'gŏḍ', name: 'god' })), '{{gŏḍ}}{{god}}');
 });
 
 test('problems in plain words', () => {
@@ -113,14 +117,13 @@ test('problems in plain words', () => {
     assert.deepStrictEqual(p({ type: 'normal', result: '' }, false), []);
     assert.ok(p({ type: 'normal', result: 'a, b' })[0].includes('choose Choices'));
     assert.ok(p({ type: 'capital', result: '{{x}}' })[0].includes('choose Choices'));
-    assert.ok(p({ type: 'name', result: 'gŏḍ', name: 'god, gods' })[0].includes('"As a name"'));
-    assert.deepStrictEqual(p({ type: 'name', result: 'gŏḍ', name: '' }),
-        ['Please type "As a name": what it gives when typed with a capital.']);
+    assert.ok(p({ type: 'normal', result: 'gŏḍ', name: 'god, gods' })[0].includes('capital spelling'));
+    assert.deepStrictEqual(p({ type: 'normal', result: 'gŏḍ', name: '' }), []);
     assert.deepStrictEqual(p({ type: 'choices', choices: ['a'] }), ['Choices needs at least two spellings, one per line.']);
     assert.deepStrictEqual(p({ type: 'choices', choices: ['a', '{{b}}'] }), ['Please type the spellings without {{ }}.']);
     assert.deepStrictEqual(p({ type: 'choices', choices: ['a', 'b'] }), []);
     assert.deepStrictEqual(p({ type: 'normal', result: '', advanced: '{{a}}{{b}}' }), []);
-    for (const msg of [].concat(p({ type: 'normal' }), p({ type: 'name', result: 'x' }), p({ type: 'choices' }))) {
+    for (const msg of [].concat(p({ type: 'normal' }), p({ type: 'normal', result: 'x', name: 'a,b' }), p({ type: 'choices' }))) {
         assert.ok(!/\{\{\}\}/.test(msg), 'no codes in messages: ' + msg);
     }
 });
@@ -179,7 +182,8 @@ if (fs.existsSync(csvPath)) {
     const rows = readCsv(fs.readFileSync(csvPath, 'utf8'));
     const head = rows.shift();
     const pi = head.indexOf('plain_text'), di = head.indexOf('diacritic_text');
-    const counts = { normal: 0, capital: 0, name: 0, choices: 0, 'choices + always capital': 0, advanced: 0 };
+    const counts = { normal: 0, 'normal + capital spelling': 0, capital: 0, choices: 0, 'choices + capital spelling': 0,
+        'choices + always capital': 0, advanced: 0 };
     const advanced = [];
     let total = 0;
     for (const r of rows) {
@@ -192,7 +196,7 @@ if (fs.existsSync(csvPath)) {
             counts.advanced += 1;
             advanced.push(`  ${r[pi]} -> ${code}   (${b.why})`);
         } else {
-            counts[b.type === 'choices' && b.capital ? 'choices + always capital' : b.type] += 1;
+            counts[b.type === 'choices' && b.capital ? 'choices + always capital' : b.name ? b.type + ' + capital spelling' : b.type] += 1;
             // the boxes as they'd be typed (lines in the Choices box) give the same code
             if (b.type === 'choices') {
                 test('choices box ' + r[pi], () => assert.strictEqual(

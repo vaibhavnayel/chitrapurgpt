@@ -1,12 +1,13 @@
 /**
- * Diacritical Mappings page: the plain boxes (Type, Result, As a name, Choices) <-> the stored code.
+ * Diacritical Mappings page: the plain boxes (Type, Result, Choices, the capital spelling) <-> the stored code.
  *
- * The stored code (diacritic_text) takes one of four forms (see diacritics.py, apply_mapping):
+ * The stored code (diacritic_text) takes one of these forms (see diacritics.py, apply_mapping):
  *   word                  Normal: follows how it's typed (krishna -> kṛs͟hṇa, Krishna -> Kṛs͟hṇa)
  *   {{}}{{word}}          Always capital: places and names (Koḍiāl)
- *   {{small}}{{name}}     Name: different when typed with a capital ({{gŏḍ}}{{god}}: god -> gŏḍ, God -> God)
  *   {{a, b}}              Choices: all shown ({{}}{{a, b}} when always capital)
- * Anything else (a name with choices, odd brackets) is kept as a code in the Advanced box.
+ *   {{small}}{{capital}}  Normal or Choices with "spelt differently when typed with a capital" filled in
+ *                         ({{gŏḍ}}{{god}}: god -> gŏḍ, God -> God). Shantish found a separate "Name" type confusing.
+ * Anything else (several capital spellings, odd brackets) is kept as a code in the Advanced box.
  *
  * Pure functions only (no page access), so they also run under node: tests/js/test_mapping_form.js.
  * cleanPlain/cleanResult are the house style, the same as diacritical/cleaning.py on the server.
@@ -70,34 +71,27 @@
     }
 
     function emptyBoxes() {
-        return { type: 'normal', result: '', name: '', choices: [], capital: false, choiceCap: 'same', advanced: '' };
-    }
-
-    function choiceCap(boxes) {
-        return boxes.choiceCap === 'name' || boxes.choiceCap === 'always' ? boxes.choiceCap
-            : (boxes.capital ? 'always' : 'same');
+        return { type: 'normal', result: '', name: '', choices: [], capital: false, advanced: '' };
     }
 
     // The stored code (house style) for the boxes. A filled Advanced box wins.
+    // .name is the optional "spelt differently when typed with a capital" box (Normal and Choices only):
+    // filled, it makes the code {{small}}{{capital spelling}} (god -> gŏḍ, but God -> God).
     function boxesToCode(boxes) {
         boxes = boxes || {};
         if ((boxes.advanced || '').trim()) return cleanResult(boxes.advanced);
         const result = (boxes.result || '').trim();
+        const name = (boxes.name || '').trim();
         let code;
         if (boxes.type === 'capital') {
             code = '{{}}{{' + result + '}}';
-        } else if (boxes.type === 'name') {
-            code = '{{' + result + '}}{{' + (boxes.name || '').trim() + '}}';
         } else if (boxes.type === 'choices') {
-            // With a capital: the same choices (default), always capital, or a name ({{choices}}{{name}}).
             const inner = (boxes.choices || []).map(function (c) { return (c || '').trim(); }).filter(Boolean).join(', ');
-            const cap = choiceCap(boxes);
-            code = cap === 'always' ? '{{}}{{' + inner + '}}'
-                : cap === 'name' ? '{{' + inner + '}}{{' + (boxes.name || '').trim() + '}}' : '{{' + inner + '}}';
+            code = boxes.capital ? '{{}}{{' + inner + '}}' : name ? '{{' + inner + '}}{{' + name + '}}' : '{{' + inner + '}}';
         } else if (boxes.type === 'advanced') {
             code = '';
         } else {
-            code = result;
+            code = name ? '{{' + result + '}}{{' + name + '}}' : result;   // normal (and the old type 'name')
         }
         return cleanResult(code);
     }
@@ -124,23 +118,20 @@
                     boxes.type = 'choices';
                     boxes.choices = main;
                     boxes.capital = true;
-                    boxes.choiceCap = 'always';
                 } else {
                     why = 'it is always capital but has no spelling';
                 }
             } else if (p.type === 'name') {
                 const names = splitChoices(p.name);
                 if (main.length === 1 && names.length === 1) {
-                    boxes.type = 'name';
                     boxes.result = main[0];
                     boxes.name = names[0];
                 } else if (main.length > 1 && names.length === 1) {
                     boxes.type = 'choices';
                     boxes.choices = main;
-                    boxes.choiceCap = 'name';
                     boxes.name = names[0];
-                } else if (main.length > 1 || names.length > 1) {
-                    why = 'it is a name with several spellings';
+                } else if (names.length > 1) {
+                    why = 'it has several spellings for when it is typed with a capital';
                 } else {
                     why = 'one of its two {{ }} groups is empty';
                 }
@@ -172,6 +163,8 @@
         boxes = boxes || {};
         const out = [];
         if ((boxes.advanced || '').trim()) return out;
+        const name = (boxes.name || '').trim();
+        const nameProblem = 'Please type the capital spelling without commas or {{ }} (one spelling only).';
         if (boxes.type === 'choices') {
             const choices = (boxes.choices || []).filter(function (c) { return (c || '').trim(); });
             if (choices.some(function (c) { return /[{}]/.test(c); })) {
@@ -180,25 +173,15 @@
             if (forSaving && choices.length < 2) {
                 out.push('Choices needs at least two spellings, one per line.');
             }
-            if (choiceCap(boxes) === 'name') {
-                const asName = (boxes.name || '').trim();
-                if (/[{},]/.test(asName)) out.push('Please type the name without commas or {{ }}.');
-                if (forSaving && !asName) out.push('Please type the name: what it gives when typed with a capital.');
-            }
+            if (!boxes.capital && /[{},]/.test(name)) out.push(nameProblem);
             return out;
         }
         const result = (boxes.result || '').trim();
-        const name = (boxes.name || '').trim();
         if (/[{},]/.test(result)) {
             out.push('Please type the Result without commas or {{ }}; for several spellings choose Choices.');
         }
-        if (boxes.type === 'name' && /[{},]/.test(name)) {
-            out.push('Please type "As a name" without commas or {{ }}; for several spellings choose Choices.');
-        }
+        if (boxes.type !== 'capital' && /[{},]/.test(name)) out.push(nameProblem);
         if (forSaving && !result) out.push('Please type the Result (the word with its marks).');
-        if (forSaving && boxes.type === 'name' && !name) {
-            out.push('Please type "As a name": what it gives when typed with a capital.');
-        }
         return out;
     }
 
