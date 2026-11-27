@@ -32,7 +32,9 @@
                 <label class="custom-control-label" for="{{ p }}ChoicesCapital">Always capital</label>
             </div>
         </div>
-        <div class="form-group box-name">
+        <a href="#" class="name-toggle" id="{{ p }}NameToggle" aria-expanded="false" aria-controls="{{ p }}NameBox"><i
+            class="fas fa-caret-right"></i> Different spelling with a capital?</a>
+        <div class="form-group box-name" id="{{ p }}NameBox" style="display: none;">
             <label for="{{ p }}AsName">Spelt differently when typed with a capital <span class="box-hint">(optional)</span></label>
             <input type="text" class="form-control" id="{{ p }}AsName" autocomplete="off">
             <small class="form-text text-muted">Leave empty for most words. Fill it only when the word with a capital has

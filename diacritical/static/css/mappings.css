@@ -353,6 +353,11 @@
     margin: 8px 0;
 }
 
+.name-toggle {
+    display: inline-block;
+    margin: 2px 0 10px;
+}
+
 .advanced-toggle {
     font-size: 0.9em;
 }

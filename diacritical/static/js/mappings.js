@@ -191,9 +191,25 @@ const MappingsManager = (function() {
         }
 
         // The optional "spelt differently when typed with a capital" box: for Normal, and Choices not always capital.
-        function nameShown() {
+        function nameAllowed() {
             const t = type();
             return t === 'normal' || (t === 'choices' && !$capital.is(':checked'));
+        }
+
+        // The box is tucked behind the link "Different spelling with a capital?" (most words don't need it); it
+        // opens by itself for an entry that has one. Closing it empties it.
+        const $nameToggle = $('#' + prefix + 'NameToggle');
+        let nameOpen = false;
+
+        function setNameOpen(open) {
+            nameOpen = open;
+            if (!open) $name.val('');
+            $nameToggle.attr('aria-expanded', open ? 'true' : 'false');
+            $nameToggle.find('i').toggleClass('fa-caret-right', !open).toggleClass('fa-caret-down', open);
+        }
+
+        function nameShown() {
+            return nameAllowed() && nameOpen;
         }
 
         function boxes() {
@@ -223,6 +239,7 @@ const MappingsManager = (function() {
             const t = type();
             $root.find('.box-result').toggle(t !== 'choices');
             $root.find('.box-name').toggle(nameShown());
+            $nameToggle.toggle(nameAllowed());
             $root.find('.box-choices').toggle(t === 'choices');
             const b = boxes();
             const code = Codes.boxesToCode(b);
@@ -264,6 +281,7 @@ const MappingsManager = (function() {
             $choices.val('');
             $capital.prop('checked', false);
             $code.val('');
+            setNameOpen(false);
         }
 
         // Show a stored code in the boxes; a code they can't show exactly opens Advanced with it.
@@ -278,6 +296,7 @@ const MappingsManager = (function() {
             } else {
                 setType(b.type);
                 $result.val(b.result);
+                setNameOpen(!!b.name);
                 $name.val(b.name);
                 $choices.val(b.choices.join('\n'));
                 $capital.prop('checked', b.capital);
@@ -298,6 +317,12 @@ const MappingsManager = (function() {
             setAdvanced(!advancedOpen);
             update();
             if (advancedOpen) $code.focus();
+        });
+        $nameToggle.on('click', function(e) {
+            e.preventDefault();
+            setNameOpen(!nameOpen);
+            update();
+            if (nameOpen) $name.focus();
         });
         $root.on('change', 'input[type=radio]', function() { triedSaving = false; });
         $root.on('input change', 'input, textarea', update);
