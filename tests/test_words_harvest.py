@@ -340,9 +340,9 @@ def test_report_layout_drop_downs_and_hidden_parts():
     clash = wb["Different from our list"]
     heads = [c.value for c in clash[2]]
     assert heads == ["Word (as in the document)", "Plain word", "Times", "Pages", "Example line", "Our list gives",
-                     "Your decision", "Capital", "Correct spelling", "Notes", "Ref"]
-    assert clash.freeze_panes == "A3" and clash.auto_filter.ref.startswith("A2:K")
-    assert clash.column_dimensions["K"].hidden                              # Ref
+                     "Your decision", "Capital", "Correct spelling", "Also typed as", "Notes", "Ref"]
+    assert clash.freeze_panes == "A3" and clash.auto_filter.ref.startswith("A2:L")
+    assert clash.column_dimensions["L"].hidden                              # Ref
     last = clash.max_row
     dvs = {str(dv.sqref): dv for dv in clash.data_validations.dataValidation}
     assert dvs[f"G3:G{last}"].formula1 == '"Our list is right,Document is right,Pending"'
@@ -513,8 +513,8 @@ def test_pending_list_round_trip():
     assert rows["kanara"]["Notes"] == "asked Gopal"
     assert rows["dipa"]["Result"] == "dīpa" and rows["dipa"]["Capital"] is None
     assert {str(dv.sqref).split(":")[0][0]: dv.formula1 for dv in ws.data_validations.dataValidation} == {
-        "I": '"Add,Remove from pending"', "K": '"Normal,Always capital"'}
-    assert ws.column_dimensions["M"].hidden
+        "I": '"Add,Remove from pending"', "L": '"Normal,Always capital"'}
+    assert ws.column_dimensions["N"].hidden
 
     filled = sheets.read_filled("pending.xlsx", fill(data, {
         ("Pending", "abhokta"): {"Your decision": "Add", "Result": "Abhoktā", "Capital": None},   # blank: Normal
@@ -545,3 +545,255 @@ def test_whole_list_reads_back_as_a_list():
     lst = sheets.list_xlsx([{"plain_text": "b", "diacritic_text": "bā"}, {"plain_text": "a", "diacritic_text": "ā"}])
     rows, problems = harvest.read_list_xlsx(lst)
     assert [(x["plain"], x["result"]) for x in rows] == [("a", "ā"), ("b", "bā")] and problems == []
+
+
+
+# ---------- 'Also typed as' and words typed in by hand ----------
+
+VLIST = dict(LIST, krsna="{{}}{{kṛs͟hṇa}}")
+VTEXT = "Shrī Kṛshṇa came. The Nāmavali was sung.\nGaṇesha and Akartā and Abhoktā with the dīpa.\n"
+DIFF, NEW = "Different from our list", "New words"
+
+
+def add_rows(data: bytes, sheet: str, rows: list[dict], at: int | None = None) -> bytes:
+    """Rows typed in by hand ({column header: value}, no Ref): at the bottom, or inserted before row `at`."""
+    wb = workbook(data)
+    ws = wb[sheet]
+    heads = [c.value for c in ws[2]]
+    for n, values in enumerate(rows):
+        row = (at + n) if at else ws.max_row + 1
+        if at:
+            ws.insert_rows(row)
+        for header, value in values.items():
+            ws.cell(row, heads.index(header) + 1).value = value
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_also_typed_as_column_and_start_here():
+    wb = workbook(sheets.report_xlsx(review(), INFO))
+    start = "\n".join(str(c) for row in wb["Start here"].iter_rows(values_only=True) for c in row if c)
+    assert "“Also typed as” (optional): other ways people type the word, separated by commas, e.g. krishna, " \
+           "krushna. Each gets the same result as the word." in start
+    assert "To add a word that isn't in the report, type it on a new row at the bottom of “New words” (the word " \
+           "with its marks) and choose Add." in start
+    for title, after in ((DIFF, "Correct spelling"), (NEW, "Correct spelling")):
+        ws = wb[title]
+        heads = [c.value for c in ws[2]]
+        i = heads.index("Also typed as")
+        assert heads[i - 1] == after and heads[i + 1] == "Notes", title
+        letter = ws.cell(2, i + 1).column_letter
+        assert ws.column_dimensions[letter].width == 24
+        assert ws[f"{letter}2"].fill.fgColor.rgb.endswith("FFF2A8") and ws[f"{letter}3"].fill.fgColor.rgb.endswith(
+            "FFF2A8")                                                            # yellow, to fill in
+        assert not any(str(dv.sqref).startswith(letter) for dv in ws.data_validations.dataValidation)  # no drop-down
+    assert "Also typed as" not in [c.value for c in wb["Written without marks"][2]]
+
+    lst = harvest.review_list([{"row": 2, "plain": "abhokta", "result": "abhoktā"},
+                               {"row": 3, "plain": "puja", "result": "pūja"}], [], LIST)
+    wb = workbook(sheets.report_xlsx(lst, INFO))
+    for title in ("New in your list", "Changed"):
+        heads = [c.value for c in wb[title][2]]
+        assert heads[heads.index("Your decision") + 1] == "Also typed as", title
+    start = "\n".join(str(c) for row in wb["Start here"].iter_rows(values_only=True) for c in row if c)
+    assert "“Also typed as” (optional)" in start and "New words" not in start
+
+
+def test_also_typed_as_in_a_filled_report():
+    r = review(VTEXT, VLIST)
+    data = fill(sheets.report_xlsx(r, INFO), {
+        (DIFF, "krshna"): {"Your decision": "Our list is right",                      # always capital
+                           "Also typed as": "krsna, Krishna; kṛshṇa,  KRUSHNA ,krushna"},
+        (DIFF, "namavali"): {"Your decision": "Our list is right", "Also typed as": "naamavali"},   # choices
+        (NEW, "ganesha"): {"Your decision": "Add", "Capital": "Always capital",
+                           "Also typed as": "ganesh, Gaṇeśa\nganapati; gaṇesha (old)"},
+        (NEW, "dipa"): {"Your decision": "Add", "Also typed as": "deepa; ganapati; akarta"},
+        (NEW, "abhokta"): {"Your decision": "Skip", "Also typed as": "abhoktaa"},
+        (NEW, "akarta"): {"Also typed as": "akartaa, akarta"},                       # blank: pending, they go along
+    })
+    filled = sheets.read_filled("x.xlsx", data)
+    a = sheets.answers_from_report(r, filled)
+    ids = {i["plain"]: i["id"] for i in sheets._items(r)}
+    assert a["rows"][ids["krshna"]]["also"] == ["krsna", "krishna", "krushna"]  # cleaned; own word and repeats out
+    assert a["rows"][ids["ganesha"]]["also_bad"] == ["gaṇesha (old)"]
+    p = sheets.plan(r, a, VLIST, "talk.docx")
+    adds = {c["plain"]: (c["result"], c.get("also_for")) for c in p["add"]}
+    assert adds == {
+        "ganesha": ("{{}}{{gaṇesha}}", None), "dipa": ("dīpa", None),
+        "krushna": ("{{}}{{kṛs͟hṇa}}", "krshna"),                                   # the entry's code: always capital
+        "naamavali": ("{{nāmāvalī (hindi), nāmāvaliḥ (sanskrit)}}", "namavali"),    # choices
+        "ganesh": ("{{}}{{gaṇesha}}", "ganesha"), "ganesa": ("{{}}{{gaṇesha}}", "ganesha"),
+        "deepa": ("dīpa", "dipa")}
+    assert "krsna" not in adds                         # already in the list with the same code: nothing, not listed
+    left = {(x["plain"], x["typed"]): x["why"] for x in p["also_left"]}
+    assert ("krshna", "krsna") not in left
+    assert left[("krshna", "krishna")] == ("krishna is already in the list as kṛs͟hṇa, so it was left as it is; "
+                                           "change it on the Mappings page if needed.")
+    assert left[("dipa, ganesha", "ganapati")].startswith("ganapati was given for dipa and ganesha, which get "
+                                                          "different results")
+    assert left[("dipa", "akarta")].startswith("akarta has its own row in this file")
+    assert left[("abhokta", "abhoktaa")] == "not used, because the word was skipped."
+    assert left[("ganesha", "gaṇesha (old)")].startswith("“gaṇesha (old)” can't be a typed word")
+    assert len(left) == 5
+    assert [(x["plain"], x["also"]) for x in p["pending"]] == [("akarta", "akartaa")]
+    p["pending_new"] = p["pending"]
+    assert sheets.sentence(p) == "This will add 7 words (5 of them other ways of typing a word) and put 1 on the " \
+                                 "pending list."
+    assert sheets.sentence(dict(p, add=p["add"][-1:]), done=True).startswith(
+        "Applied: added 1 word (another way of typing a word)")
+
+    # the word changed in the list since the report: its other ways aren't used either
+    p2 = sheets.plan(r, a, dict(VLIST, krshna="kṛṣṇa"))
+    assert "krushna" not in {c["plain"] for c in p2["add"]}
+    assert "not used, because krshna was changed in the list after this file was made." in \
+        [x["why"] for x in p2["also_left"]]
+    # a re-downloaded report shows them again
+    again = workbook(sheets.report_xlsx(r, INFO, a["cells"], a["extra_cells"]))
+    assert {row["Plain word"]: row["Also typed as"] for row in rows_of(again[NEW])}["dipa"] == "deepa; ganapati; akarta"
+
+
+def test_words_typed_in_on_new_words():
+    r = review(VTEXT, VLIST)
+    blank = sheets.report_xlsx(r, INFO)
+    data = add_rows(fill(blank, {(NEW, "dipa"): {"Your decision": "Add"}}), NEW, [
+        {"Word (as in the document)": "āvaraṇa-s", "Your decision": "Add", "Also typed as": "avaranas"},
+        {"Word (as in the document)": "Āvaraṇa", "Your decision": "add", "Capital": "Always capital"},
+        {"Word (as in the document)": "Kṛṣṇa", "Plain word": "krishna", "Your decision": "Add"},   # in the list
+        {"Word (as in the document)": "Gaṇesha", "Your decision": "Add"},          # has its own row in the report
+        {"Word (as in the document)": "sevā", "Your decision": "Add"},
+        {"Word (as in the document)": "sēva", "Your decision": "Add"},             # the same plain word, differently
+        {"Word (as in the document)": "pūjā", "Plain word": "puja", "Your decision": "Add"},   # exactly as in the list
+        {"Word (as in the document)": "dhūpa", "Notes": "ask the team", "Also typed as": "dhoopa"},   # blank: pending
+        {"Plain word": "foo", "Your decision": "Add"},                              # no word with marks
+        {"Notes": "just a remark"},                                                 # no word at all: ignored
+        {"Word (as in the document)": "tīrtha", "Your decision": "Skip"},
+        {"Word (as in the document)": "mālā", "Your decision": "perhaps"},
+    ])
+    filled = sheets.read_filled("x.xlsx", data)
+    assert len(filled["extra"]) == 11
+    a = sheets.answers_from_report(r, filled)
+    p = sheets.plan(r, a, VLIST, "talk.docx")
+    adds = {c["plain"]: (c["result"], c.get("own_row"), c.get("also_for")) for c in p["add"]}
+    rows = {x["word"]: x["row"] for x in filled["extra"]}
+    assert adds == {"dipa": ("dīpa", None, None),
+                    "avarana-s": ("āvaraṇa-s", f"New words, row {rows['āvaraṇa-s']}", None),
+                    "avarana": ("{{}}{{āvaraṇa}}", f"New words, row {rows['Āvaraṇa']}", None),
+                    "avaranas": ("āvaraṇa-s", None, "avarana-s")}
+    left = {x["word"]: x["why"] for x in p["own_left"]}
+    assert left["Kṛṣṇa"].startswith("krishna is already in the list as kṛs͟hṇa, so it was left as it is")
+    assert left["Gaṇesha"].startswith("ganesha has its own row in this report")
+    assert left["sevā"] == left["sēva"] and "more than one of your own rows" in left["sevā"]
+    assert left["pūjā"] == "puja is already in the list exactly like this, so nothing changes."
+    assert left["foo"] == "not added: there is no word with its marks in the “Word” column."
+    assert left["mālā"] == "not added: “perhaps” isn't Add, Pending or Skip."
+    assert "tīrtha" not in left and len(left) == 7
+    pend = {x["plain"]: x for x in p["pending"]}
+    assert set(pend) == {"abhokta", "akarta", "ganesha", "krshna", "namavali", "dhupa"}
+    assert pend["dhupa"]["suggested"] == "dhūpa" and pend["dhupa"]["notes"] == "ask the team"
+    assert pend["dhupa"]["also"] == "dhoopa" and "“New words” sheet" in pend["dhupa"]["reason"]
+    # shown again at the bottom of a re-downloaded report
+    again = rows_of(workbook(sheets.report_xlsx(r, INFO, a["cells"], a["extra_cells"]))[NEW])
+    assert [row["Word (as in the document)"] for row in again[-11:]][:2] == ["āvaraṇa-s", "Āvaraṇa"]
+
+
+def test_an_old_report_with_a_column_and_a_row_added_by_hand():
+    r = review(VTEXT, VLIST)
+    wb = workbook(sheets.report_xlsx(r, INFO))
+    for title in (DIFF, NEW):                     # a report made before the column existed
+        ws = wb[title]
+        ws.delete_cols([c.value for c in ws[2]].index("Also typed as") + 1)
+    out = io.BytesIO()
+    wb.save(out)
+    old = out.getvalue()
+    assert sheets.read_filled("x.xlsx", old)["cells"]
+    assert all(c["also"] is None for c in sheets.read_filled("x.xlsx", old)["cells"].values())
+    wb = workbook(old)
+    ws = wb[NEW]
+    ws.insert_cols(3)                             # he inserts a column himself, with a heading of his own
+    ws.cell(2, 3).value = "  ALSO typed  as (optional) "
+    ws2 = wb[DIFF]
+    ws2.insert_cols(12)
+    ws2.cell(2, 12).value = "Variants"
+    out = io.BytesIO()
+    wb.save(out)
+    data = fill(out.getvalue(), {(NEW, "dipa"): {"Your decision": "Add", "  ALSO typed  as (optional) ": "deepa"},
+                                 (DIFF, "krshna"): {"Your decision": "Our list is right", "Variants": "krushna"}})
+    data = add_rows(data, NEW, [{"Word (as in the document)": "āvaraṇa-s", "Your decision": "Add"}], at=4)
+    p = sheets.plan(r, sheets.answers_from_report(r, sheets.read_filled("x.xlsx", data)), VLIST)
+    assert {c["plain"]: c["result"] for c in p["add"]} == {"dipa": "dīpa", "deepa": "dīpa",
+                                                         "krushna": "{{}}{{kṛs͟hṇa}}", "avarana-s": "āvaraṇa-s"}
+    for header in ("Also add", "other spellings", "Also_typed_as", "Variants:"):
+        assert sheets._head(header) == "also", header
+
+
+def test_a_copied_row_with_another_word_is_a_word_of_its_own():
+    r = review(VTEXT, VLIST)
+    wb = workbook(sheets.report_xlsx(r, INFO))
+    ws = wb[NEW]
+    heads = [c.value for c in ws[2]]
+    src = next(n for n in range(3, ws.max_row + 1) if ws.cell(n, heads.index("Plain word") + 1).value == "dipa")
+    new = ws.max_row + 1
+    for i in range(1, len(heads) + 1):            # copied with its Ref, then the word changed
+        ws.cell(new, i).value = ws.cell(src, i).value
+    ws.cell(new, 1).value = "dīpa-s"
+    ws.cell(new, heads.index("Your decision") + 1).value = "Add"
+    ws.cell(src, heads.index("Your decision") + 1).value = "Skip"           # the original row: skipped
+    out = io.BytesIO()
+    wb.save(out)
+    p = sheets.plan(r, sheets.answers_from_report(r, sheets.read_filled("x.xlsx", out.getvalue())), VLIST)
+    assert [(c["plain"], c["result"]) for c in p["add"]] == [("dipa-s", "dīpa-s")]
+
+
+def test_also_typed_as_on_the_pending_list():
+    from datetime import datetime
+    when = datetime(2026, 11, 20, 5, 0)
+
+    def item(i, plain, sug, also=""):
+        return {"id": i, "plain_text": plain, "suggested": sug, "reason": "New word", "source": "", "page": "",
+                "context": "", "notes": "", "also": also, "added_at": when}
+    items = [item(21, "ganesha", "{{}}{{gaṇesha}}", "ganesh, ganesa"), item(22, "dipa", "dīpa", "deepa"),
+             item(23, "seva", "sevā", "sewa"), item(24, "akarta", "akartā"), item(25, "mala", "mālā", "maala")]
+    data = sheets.pending_xlsx(items, LIST, {"list": "trial", "made_iso": "2026-11-20T10:00:00", "when": str})
+    ws = workbook(data)["Pending"]
+    heads = [c.value for c in ws[2]]
+    assert heads[heads.index("Result") + 1] == "Also typed as"
+    assert {row["Plain word"]: row["Also typed as"] for row in rows_of(ws)}["ganesha"] == "ganesh, ganesa"
+    filled = sheets.read_filled("p.xlsx", fill(data, {
+        ("Pending", "ganesha"): {"Your decision": "Add"},                             # as pre-filled
+        ("Pending", "dipa"): {"Your decision": "Add", "Also typed as": "deepa, deepaa; mala"},  # edited
+        ("Pending", "seva"): {"Your decision": "Remove from pending"},
+        ("Pending", "akarta"): {"Also typed as": "akartaa"},                          # stays, keeps the new ones
+    }))
+    open_items = {i["id"]: i for i in items}
+    p = sheets.plan_pending(sheets.answers_from_pending(filled), open_items, LIST)
+    assert {c["plain"]: (c["result"], c.get("also_for")) for c in p["add"]} == {
+        "ganesha": ("{{}}{{gaṇesha}}", None), "ganesh": ("{{}}{{gaṇesha}}", "ganesha"),
+        "ganesa": ("{{}}{{gaṇesha}}", "ganesha"), "dipa": ("dīpa", None), "deepa": ("dīpa", "dipa"),
+        "deepaa": ("dīpa", "dipa")}
+    assert p["also_set"] == {22: "deepa, deepaa, mala", 24: "akartaa"}
+    whys = {x["typed"]: x["why"] for x in p["also_left"]}
+    assert whys["mala"].startswith("mala has its own row in this file")
+    assert whys["sewa"] == "not used, because the word was taken off the pending list."
+    assert sheets.sentence(dict(p, pending_off=3)) == ("This will add 6 words (4 of them other ways of typing a "
+                                                       "word) and take 3 off the pending list.")
+
+    # a pending list downloaded before the column existed: Add brings what the item carries
+    wb = workbook(data)
+    wb["Pending"].delete_cols(heads.index("Also typed as") + 1)
+    out = io.BytesIO()
+    wb.save(out)
+    old = sheets.read_filled("p.xlsx", fill(out.getvalue(), {("Pending", "ganesha"): {"Your decision": "Add"}}))
+    p = sheets.plan_pending(sheets.answers_from_pending(old), open_items, LIST)
+    assert sorted(c["plain"] for c in p["add"]) == ["ganesa", "ganesh", "ganesha"] and p["also_set"] == {}
+    # cleared in the file: nothing extra
+    p = sheets.plan_pending(sheets.answers_from_pending(sheets.read_filled("p.xlsx", fill(data, {
+        ("Pending", "ganesha"): {"Your decision": "Add", "Also typed as": None}}))), open_items, LIST)
+    assert [c["plain"] for c in p["add"]] == ["ganesha"]
+
+
+def test_split_also():
+    assert sheets.split_also(" Krishna,krushna ;\nKṛṣṇa, , krishna.", "krsna") == (["krishna", "krushna"], [])
+    assert sheets.split_also("kṛs͟hṇa", "krshna") == ([], [])
+    assert sheets.split_also("x (y), shri-vidya, o'brien", "") == (["shri-vidya", "o'brien"], ["x (y)"])
+    assert sheets.also_text("Krushna;krishna", "") == "krushna, krishna"

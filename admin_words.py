@@ -408,7 +408,8 @@ async def report(request: Request, review_id: int):
     if rv is None or rv["kind"] not in ("document", "list"):
         return Response("Not found", status_code=404)
     cells = (rv["decisions"] or {}).get("cells")
-    data = await asyncio.to_thread(sheets.report_xlsx, rv["items"], _report_info(rv), cells)
+    extra = (rv["decisions"] or {}).get("extra_cells")
+    data = await asyncio.to_thread(sheets.report_xlsx, rv["items"], _report_info(rv), cells, extra)
     stem = re.sub(r"[^A-Za-z0-9._-]+", "-", rv["files"][0]["name"].rsplit(".", 1)[0])[:60] if rv["files"] else "upload"
     return _xlsx(data, f"word-check-{review_id}-{stem}.xlsx")
 
@@ -427,7 +428,8 @@ async def _take_decisions(admin: str, name: str, data: bytes):
             return rid, None
         rid = wordlist.store_pending_answers(conn, n, filled, admin, name)
         p = wordlist.plan_for(conn, n, wordlist.get_review(conn, n, rid))
-        if not any(p[k] for k in ("add", "update", "delete", "remove", "notes", "unclear", "skipped", "resolve")):
+        if not any(p[k] for k in ("add", "update", "delete", "remove", "notes", "also_set", "also_left", "unclear",
+                                  "skipped", "resolve")):
             wordlist.cancel(conn, n, rid)
             return None, "Nothing to apply: no row of the pending list says Add or Remove from pending."
         return rid, None
@@ -498,8 +500,13 @@ def _confirm_body(rv: dict, p: dict, csrf: str) -> str:
 <p>Your decisions from {source}.</p>
 <div class="sentence">{_e(sheets.sentence(p))}</div>{''.join(parts)}{buttons}"""]
     if p["add"]:
+        def added(c):
+            why = (f"also typed as, for {c['also_for']}" if c.get("also_for") else
+                   f"your own row: {c['own_row']}" if c.get("own_row") else "")
+            return [_e(c["plain"]), _shown(c["result"]) + (f' <span class="dim">({_e(why)})</span>' if why else "")]
+        ordered = sorted(p["add"], key=lambda c: (c.get("also_for") or c["plain"], bool(c.get("also_for"))))
         out.append(f"<h2>Words added ({len(p['add'])})</h2>" + _table(
-            ["Plain word", "In the list it will be"], [[_e(c["plain"]), _shown(c["result"])] for c in p["add"]]))
+            ["Plain word", "In the list it will be"], [added(c) for c in ordered]))
     if p["update"]:
         out.append(f"<h2>Words changed ({len(p['update'])})</h2>" + _table(
             ["Plain word", "Now", "After"], [[_e(c["plain"]), _shown(c["old"]), _shown(c["result"])]
@@ -519,14 +526,22 @@ def _confirm_body(rv: dict, p: dict, csrf: str) -> str:
             ["Plain word", "Then", "Now", "Your decision wanted"],
             [[_e(x["plain"]), _shown(x["then"]), _shown(x["now"]),
               _e(x.get("why")) if x.get("why") else _shown(x["wanted"])] for x in p["skipped"]]))
+    if p.get("own_left"):
+        out.append(f"<h2>Words you typed in, not added ({len(p['own_left'])})</h2>" + _table(
+            ["Word", "Where", "Why"],
+            [[_e(x["word"] or x["plain"]), _where(x), _e(x["why"])] for x in p["own_left"]]))
+    if p.get("also_left"):
+        out.append(f"<h2>Other ways of typing, not added ({len(p['also_left'])})</h2>" + _table(
+            ["For the word", "What happened"], [[_e(x["plain"]), _e(x["why"])] for x in p["also_left"]]))
 
     def listed(title, items, note=""):
         if not items:
             return ""
         return (f'<details class="more"><summary>{_e(title)} ({len(items)})</summary>{note}<ul class="cols">'
                 + "".join(f"<li>{x}</li>" for x in items) + "</ul></details>")
-    out.append(listed("Put on the pending list", [f"{_e(x['plain'])} → {_shown(x['suggested'])}"
-                                                  for x in p["pending_new"]]))
+    out.append(listed("Put on the pending list", [f"{_e(x['plain'])} → {_shown(x['suggested'])}" + (
+        f' <span class="dim">(also typed as: {_e(x["also"])})</span>' if x.get("also") else "")
+        for x in p["pending_new"]]))
     already = [x for x in p["pending"] if x not in p["pending_new"]]
     out.append(listed("Already on the pending list (left as they are)", [_e(x["plain"]) for x in already]))
     if p.get("remove"):
@@ -535,11 +550,13 @@ def _confirm_body(rv: dict, p: dict, csrf: str) -> str:
     if p["pending_off"]:
         out.append(f'<p class="dim">{p["pending_off"]} {"word comes" if p["pending_off"] == 1 else "words come"} off '
                    'the pending list because they are added, changed, confirmed or removed here.</p>')
+    also_set = (f' “Also typed as” changed on {len(p["also_set"])}.' if p.get("also_set") else "")
     if pending_upload and p.get("stay"):
         out.append(f'<p class="dim">{p["stay"]} {"row stays" if p["stay"] == 1 else "rows stay"} on the pending list.'
-                   + (f' Notes changed on {len(p["notes"])}.' if p.get("notes") else "") + "</p>")
-    elif p.get("notes"):
-        out.append(f'<p class="dim">Notes changed on {len(p["notes"])} pending words.</p>')
+                   + (f' Notes changed on {len(p["notes"])}.' if p.get("notes") else "") + also_set + "</p>")
+    elif p.get("notes") or also_set:
+        out.append('<p class="dim">' + (f'Notes changed on {len(p["notes"])} pending words.' if p.get("notes") else "")
+                   + also_set + "</p>")
     if p["words"]:
         out.append(f'<details class="more"><summary>Read from your own words ({len(p["words"])})</summary>' + _table(
             ["Word", "Where", "You wrote", "Read as"],
@@ -547,7 +564,8 @@ def _confirm_body(rv: dict, p: dict, csrf: str) -> str:
     if p.get("missing"):
         out.append(listed("Not in your file (rows deleted?): they go to the pending list",
                           [_e(x) for x in p["missing"]]))
-    if len(p["add"]) + len(p["update"]) + len(p["delete"]) + len(unclear) + len(p["skipped"]) > 12:
+    if len(p["add"]) + len(p["update"]) + len(p["delete"]) + len(unclear) + len(p["skipped"]) \
+            + len(p.get("also_left", [])) + len(p.get("own_left", [])) > 12:
         out.append(buttons)
     return "".join(out)
 

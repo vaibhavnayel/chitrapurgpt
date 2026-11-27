@@ -8,6 +8,11 @@ style: other text is allowed; it is read where the meaning is obvious, otherwise
 page). A hidden column 'Ref' ties each row to its item, so sorting or deleting rows is harmless; a hidden sheet
 '_dashboard' says what the file is (a report of review N, or the pending list with what each row showed) and for which
 list (trial or live).
+
+'Also typed as' (optional, on the sheets whose decisions keep an entry and on the pending list): other ways people type
+the word, separated by commas. When the word keeps an entry, each becomes an entry with exactly the same code; a word
+put on the pending list takes them with it. Columns are read by their header, so the column can also be added by hand
+to a report made before it existed.
 """
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ import json
 import re
 
 from . import harvest
-from .cleaning import clean_result
+from .cleaning import clean_plain, clean_result
 
 DASHBOARD = "_dashboard"
 FONT = 12
@@ -70,6 +75,13 @@ CAP_WORDS = {"normal": ["normal", "not always capital", "small", "small letters"
              "keep": ["keep", "keep as it is", "as it is", "no change"]}
 
 YELLOW, BLUE, GREY = "FFF2A8", "DDE7F3", "E4E4E4"
+ALSO = "Also typed as"
+NEW_SHEET = "New words"
+OWN_HELP = ("To add a word that isn't in the report, type it on a new row at the bottom of “New words” (the word with "
+            "its marks) and choose Add.")
+ALSO_HELP = ("“Also typed as” (optional): other ways people type the word, separated by commas, e.g. krishna, krushna. "
+             "Each gets the same result as the word.")
+PLAIN_OK = re.compile(r"[a-z0-9' \-]+")      # what a plain word of the list may hold (as harvest.clean_list_rows)
 
 
 class NotOurs(harvest.ReadProblem):
@@ -150,6 +162,26 @@ def spelling(text) -> tuple[str, str | None]:
     s = clean_result(harvest.house(raw))
     why = harvest.code_problem(s)
     return s, (f"the spelling “{raw}” can't be used: {why}" if why else None)
+
+
+def split_also(text, own: str = "") -> tuple[list[str], list[str]]:
+    """An 'Also typed as' cell: (the other ways of typing, each a plain word in the house style, and the parts that
+    can't be a plain word, as typed). Split at commas, semicolons and line breaks; empty parts, repeats and the row's
+    own plain word are left out."""
+    good, bad = [], []
+    for part in re.split(r"[,;\n\r]+", str(text or "")):
+        part = part.strip().strip(".\"'“”‘’").strip()
+        v = clean_plain(part)
+        if not v or v == own or v in good or part in bad:
+            continue
+        (good if PLAIN_OK.fullmatch(v) else bad).append(v if PLAIN_OK.fullmatch(v) else part)
+    return good, bad
+
+
+def also_text(text, own: str = "") -> str:
+    """An 'Also typed as' cell as it is kept with a pending word: 'krishna, krushna'."""
+    good, bad = split_also(text, own)
+    return ", ".join(good + bad)
 
 
 # ---------- workbooks: writing ----------
@@ -279,9 +311,10 @@ def refs(item: dict) -> list[str]:
     return [item["id"]]
 
 
-def report_xlsx(review: dict, info: dict, cells: dict | None = None) -> bytes:
+def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list | None = None) -> bytes:
     """The report of a review, to fill in. info: review (id), list ('trial'|'live'), list_label, files, made, by,
-    status. cells: what an uploaded copy said, by Ref ({decision, capital, spelling, notes}), to show it again."""
+    status. cells: what an uploaded copy said, by Ref ({decision, capital, spelling, also, notes}), to show it again;
+    extra: the rows typed in on its 'New words' sheet (read_filled's 'extra'), shown again at the bottom."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment
     cells = cells or {}
@@ -307,11 +340,16 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None) -> bytes:
     if doc:
         steps += ["“Capital”: choose Always capital for names and places; blank keeps the entry as it is (for a new "
                   "word: Normal). “Correct spelling” (optional) is used instead of the document's spelling.",
+                  ALSO_HELP,
                   "“Notes” go with the word to the pending list, for the Diacriticals team."]
+        if s.get("new"):
+            steps.append(OWN_HELP)
         if s.get("unmarked"):
             steps.append("“Written without marks” already says “Nothing to change”; choose Pending for a word the "
                          "team should look at.")
     else:
+        if s.get("lnew") or s.get("lchanged"):
+            steps.append(ALSO_HELP)
         steps.append("“Notes” go with the word to the pending list, for the Diacriticals team.")
     steps.append("Save this file and upload it on the dashboard under “Upload your decisions”. You'll see a summary "
                  "and an Apply button before anything in the list changes.")
@@ -348,32 +386,36 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None) -> bytes:
             for item in s["clash"]:
                 for ref, r in zip(refs(item), item.get("rows") or [item]):
                     rows.append([r["form"], item["plain"], r["times"], r["where"], r["line"], _gives(item),
-                                 c(ref, "decision"), c(ref, "capital"), c(ref, "spelling"), c(ref, "notes"), ref])
+                                 c(ref, "decision"), c(ref, "capital"), c(ref, "spelling"), c(ref, "also"),
+                                 c(ref, "notes"), ref])
             _table_sheet(wb, "Different from our list",
                          "In our list, but the document spells it differently. “Your decision”: blank = Pending. "
                          "“Capital” blank = keep as it is. A word spelt two ways has one row per spelling: choose "
                          "“Document is right” on the right one only. " + pend_note,
                          [("Word (as in the document)", 22), ("Plain word", 16), ("Times", 7), ("Pages", 10),
                           ("Example line", 48), ("Our list gives", 24), ("Your decision", 20), ("Capital", 15),
-                          ("Correct spelling", 18), ("Notes", 30), ("Ref", 8)], rows,
+                          ("Correct spelling", 18), (ALSO, 24), ("Notes", 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["clash"]],
-                                 "Capital": [lab for _, lab in CAPITALS]})
+                                 "Capital": [lab for _, lab in CAPITALS], ALSO: None})
         if s.get("new"):
             rows = []
             for item in s["new"]:
                 cap = CAP_LABEL["capital"] if item.get("seen") == "name" else ""
                 for ref, r in zip(refs(item), item.get("rows") or [item]):
                     rows.append([r["form"], item["plain"], r["times"], r["where"], r["line"], c(ref, "decision"),
-                                 c(ref, "capital", cap), c(ref, "spelling"), c(ref, "notes"), ref])
+                                 c(ref, "capital", cap), c(ref, "spelling"), c(ref, "also"), c(ref, "notes"), ref])
+            for x in extra or []:
+                rows.append([x.get("word"), x.get("plain"), None, None, None, x.get("decision"), x.get("capital"),
+                             x.get("spelling"), x.get("also"), x.get("notes"), None])
             _table_sheet(wb, "New words",
                          "Words with marks that are not in our list. “Your decision”: blank = Pending. “Capital”: "
                          "blank = Normal (Always capital is filled in for words only seen with a capital, also "
                          "mid-sentence). " + pend_note,
                          [("Word (as in the document)", 22), ("Plain word", 16), ("Times", 7), ("Pages", 10),
                           ("Example line", 52), ("Your decision", 16), ("Capital", 15), ("Correct spelling", 18),
-                          ("Notes", 30), ("Ref", 8)], rows,
+                          (ALSO, 24), ("Notes", 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["new"]],
-                                 "Capital": [lab for _, lab in CAPITALS]})
+                                 "Capital": [lab for _, lab in CAPITALS], ALSO: None})
         if s.get("unmarked"):
             rows = [[i["form"], i["plain"], i["times"], i["where"], i["line"], _gives(i),
                      c(i["id"], "decision", label("unmarked", "none")), c(i["id"], "notes"), i["id"]]
@@ -411,19 +453,20 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None) -> bytes:
             _table_sheet(wb, "New in your list", "In your list, not in ours. “Add” is filled in; change it to Pending "
                          "or Skip where needed. " + pend_note,
                          [("Plain word", 18), ("Result in your list", 26), ("Shown as", 30), ("Row", 7),
-                          ("Your decision", 16), ("Notes", 30), ("Ref", 8)],
+                          ("Your decision", 16), (ALSO, 24), ("Notes", 30), ("Ref", 8)],
                          [[i["plain"], i["result"], harvest.describe(i["result"]), i["row"],
-                           c(i["id"], "decision", label("lnew", "add")), c(i["id"], "notes"), i["id"]]
-                          for i in s["lnew"]],
-                         decide={"Your decision": [lab for _, lab in CHOICES["lnew"]]})
+                           c(i["id"], "decision", label("lnew", "add")), c(i["id"], "also"), c(i["id"], "notes"),
+                           i["id"]] for i in s["lnew"]],
+                         decide={"Your decision": [lab for _, lab in CHOICES["lnew"]], ALSO: None})
         if s.get("lchanged"):
             _table_sheet(wb, "Changed", "In both lists, with a different result. “Your decision”: blank = Pending. "
                          + pend_note,
                          [("Plain word", 18), ("Our list gives", 30), ("Your list gives", 30), ("Row", 7),
-                          ("Your decision", 18), ("Notes", 30), ("Ref", 8)],
+                          ("Your decision", 18), (ALSO, 24), ("Notes", 30), ("Ref", 8)],
                          [[i["plain"], harvest.describe(i["entry"]), harvest.describe(i["result"]), i["row"],
-                           c(i["id"], "decision"), c(i["id"], "notes"), i["id"]] for i in s["lchanged"]],
-                         decide={"Your decision": [lab for _, lab in CHOICES["lchanged"]]})
+                           c(i["id"], "decision"), c(i["id"], "also"), c(i["id"], "notes"), i["id"]]
+                          for i in s["lchanged"]],
+                         decide={"Your decision": [lab for _, lab in CHOICES["lchanged"]], ALSO: None})
         if s.get("lmissing"):
             _table_sheet(wb, "Missing from your list", "In our list, not in yours: kept unless you choose Delete.",
                          [("Plain word", 18), ("Our list gives", 30), ("Your decision", 16), ("Ref", 8)],
@@ -448,7 +491,8 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None) -> bytes:
 
 def pending_xlsx(items: list[dict], current: dict[str, str], info: dict) -> bytes:
     """The open pending items, to fill in: 'Your decision' (Add / Remove from pending; blank = stays pending), 'Result'
-    (the suggestion, to overwrite with the agreed spelling), 'Capital', 'Notes'. info: list, made, made_iso, by,
+    (the suggestion, to overwrite with the agreed spelling), 'Also typed as' (what the item carries), 'Capital',
+    'Notes'. info: list, made, made_iso, by,
     when(timestamp)->str. The hidden sheet keeps what each row showed (the entry then), for the check on upload."""
     from openpyxl import Workbook
     wb = Workbook()
@@ -466,16 +510,17 @@ def pending_xlsx(items: list[dict], current: dict[str, str], info: dict) -> byte
             result, cap = p["main"].strip(), CAP_LABEL["capital"]
         rows.append([i["plain_text"], harvest.describe(sug) if sug else "", harvest.describe(entry) if entry else
                      "(not in our list)", i["reason"], i["source"], i["page"], i["context"], when(i["added_at"]),
-                     "", result, cap, i.get("notes") or "", str(i["id"])])
+                     "", result, i.get("also") or "", cap, i.get("notes") or "", str(i["id"])])
         snap.append([str(i["id"]), i["plain_text"], entry or "", sug])
     _table_sheet(wb, "Pending", "Words waiting for an answer. “Your decision”: Add puts “Result” in the list (change "
                  "it to the agreed spelling if needed; house style is applied), Remove from pending takes the word off "
                  "the list, blank = stays pending. “Capital” blank = Normal for a new word, or keeps the entry's form "
-                 "for a change. Then upload this file on the dashboard under “Upload your decisions”.",
+                 "for a change. “Also typed as”: other ways people type the word, separated by commas; with Add each "
+                 "gets the same result. Then upload this file on the dashboard under “Upload your decisions”.",
                  [("Plain word", 16), ("Suggested", 24), ("Our list now gives", 22), ("Why", 36), ("Source", 22),
                   ("Page", 8), ("Example line", 44), ("Added", 16), ("Your decision", 18), ("Result", 22),
-                  ("Capital", 15), ("Notes", 30), ("Ref", 8)], rows,
-                 decide={"Your decision": [lab for _, lab in CHOICES["pending"]], "Result": None,
+                  (ALSO, 24), ("Capital", 15), ("Notes", 30), ("Ref", 8)], rows,
+                 decide={"Your decision": [lab for _, lab in CHOICES["pending"]], "Result": None, ALSO: None,
                          "Capital": [lab for _, lab in CAPITALS]})
     _dashboard_sheet(wb, [("kind", "pending"), ("list", info["list"]), ("made", info.get("made_iso", "")),
                           ("version", 1)], [["ref", "plain", "entry", "suggested"]] + snap)
@@ -504,7 +549,22 @@ def list_xlsx(entries: list[dict]) -> bytes:
 # ---------- workbooks: reading back ----------
 
 HEADERS = {"your decision": "decision", "capital": "capital", "correct spelling": "spelling", "result": "result",
-           "notes": "notes", "ref": "ref", "word (as in the document)": "word", "plain word": "plain"}
+           "notes": "notes", "ref": "ref", "word (as in the document)": "word", "plain word": "plain",
+           # 'Also typed as', also as a column someone adds by hand to a report made before it existed
+           "also typed as": "also", "also typed": "also", "also add": "also", "other spellings": "also",
+           "other spelling": "also", "variants": "also", "variant": "also", "other ways of typing": "also"}
+_HEAD_KEYS = {re.sub(r"[\s_\-]+", "", k): v for k, v in HEADERS.items()}
+
+
+def _head(value) -> str | None:
+    """What a column header means (a key of HEADERS' values), ignoring case, spaces and a remark in brackets at the
+    end ('Also typed as (optional)'), or None."""
+    t = _norm(value)
+    for cand in (t, re.sub(r"\s*\([^)]*\)$", "", t)):
+        key = _HEAD_KEYS.get(re.sub(r"[\s_\-]+", "", cand))
+        if key:
+            return key
+    return None
 
 
 def is_dashboard_file(data: bytes) -> bool:
@@ -521,7 +581,9 @@ def is_dashboard_file(data: bytes) -> bool:
 def read_filled(name: str, data: bytes) -> dict:
     """A filled report or pending list: {'kind': 'report'|'pending', 'list', 'made', 'review' (report),
     'snapshot' (pending: {ref: {plain, entry, suggested}}), 'cells': {ref: {sheet, row, word, decision, capital,
-    spelling, result, notes}}}. Raises NotOurs / ReadProblem with a message for people."""
+    spelling, result, notes, also}}} ('also' is None when the sheet has no 'Also typed as' column), 'extra': [rows
+    typed in by hand on a report's 'New words' sheet: {sheet, row, word, plain, decision, capital, spelling, notes,
+    also}]}. Raises NotOurs / ReadProblem with a message for people."""
     from openpyxl import load_workbook
     low = (name or "").lower()
     if low.endswith((".xls", ".csv", ".ods", ".numbers")):
@@ -551,15 +613,20 @@ def read_filled(name: str, data: bytes) -> dict:
     if meta.get("kind") not in ("report", "pending") or meta.get("list") not in ("trial", "live"):
         raise NotOurs("This file's hidden “_dashboard” sheet was changed, so it can't be matched to an upload. "
                       "Please download the report again.")
-    cells = {}
+    cells, extra, first_word = {}, [], {}
     for ws in wb.worksheets:
         if ws.title == DASHBOARD:
             continue
+        own_rows = meta["kind"] == "report" and _norm(ws.title) == NEW_SHEET.lower()
         rows = list(ws.iter_rows(values_only=True))
         head = next((n for n, r in enumerate(rows[:6]) if any(_norm(v) == "ref" for v in r)), None)
         if head is None:
             continue
-        cols = {HEADERS[_norm(v)]: i for i, v in enumerate(rows[head]) if _norm(v) in HEADERS}
+        cols = {}
+        for i, v in enumerate(rows[head]):
+            key = _head(v)
+            if key and key not in cols:
+                cols[key] = i
         for n, r in enumerate(rows[head + 1:], head + 2):
             def get(k):
                 i = cols.get(k)
@@ -568,10 +635,28 @@ def read_filled(name: str, data: bytes) -> dict:
             ref = get("ref")
             if ref and ref not in cells:
                 cells[ref] = {"sheet": ws.title, "row": n, "word": get("word") or get("plain"),
-                              **{k: get(k) for k in ("decision", "capital", "spelling", "result", "notes")}}
+                              **{k: get(k) for k in ("decision", "capital", "spelling", "result", "notes")},
+                              "also": get("also") if "also" in cols else None}
+                first_word[ref] = (get("word"), get("spelling"), get("plain"))
+                continue
+            if not own_rows:
+                continue
+            # a row typed in by hand on 'New words' (no Ref), or a copied row given another word: a word of their own
+            own = {"sheet": ws.title, "row": n, "word": get("word"), "plain": get("plain"),
+                   **{k: get(k) for k in ("decision", "capital", "spelling", "notes")},
+                   "also": get("also") if "also" in cols else None}
+            if ref:
+                word, spelt, plain = first_word[ref]
+                if (own["word"], own["spelling"]) == (word, spelt):
+                    continue                              # the same row twice
+                if own["plain"] == plain:
+                    own["plain"] = ""                     # copied along: made from the new word instead
+            if own["word"] or own["spelling"] or own["plain"]:
+                extra.append(own)
     review = meta.get("review")
     return {"kind": meta["kind"], "list": meta["list"], "made": str(meta.get("made") or ""),
-            "review": int(review) if str(review or "").isdigit() else None, "snapshot": snapshot, "cells": cells}
+            "review": int(review) if str(review or "").isdigit() else None, "snapshot": snapshot, "cells": cells,
+            "extra": extra}
 
 
 # ---------- what the decisions mean ----------
@@ -584,19 +669,24 @@ def _items(review: dict):
 
 
 def answers_from_report(review: dict, filled: dict) -> dict:
-    """Each item's decision from a filled report: {'rows': {item id: {choice, option, cap, spelling, note}},
+    """Each item's decision from a filled report: {'rows': {item id: {choice, option, cap, spelling, note, also
+    (other ways of typing it), also_bad (parts of 'Also typed as' that can't be a plain word)}},
     'unclear': [...], 'words': [...] (read from someone's own words), 'missing': [words whose rows weren't in the
-    file], 'cells': the cells (to show again in a re-downloaded report)}."""
+    file], 'cells': the cells (to show again in a re-downloaded report), 'extra': [words typed in on their own rows
+    (_own_row)], 'extra_cells': those rows as typed}."""
     cells = filled["cells"]
     out = {"rows": {}, "unclear": [], "words": [], "missing": [], "cells": cells}
     for item in _items(review):
         kind = item["kind"]
-        per_row, notes, problems = [], [], []
+        per_row, notes, problems, also, also_bad = [], [], [], [], []
         item_refs = refs(item)
         for k, ref in enumerate(item_refs):
             cell = cells.get(ref)
             if cell is None:
                 continue
+            good, bad = split_also(cell.get("also"), item["plain"])   # any row of the word: they're all for it
+            also += [v for v in good if v not in also]
+            also_bad += [v for v in bad if v not in also_bad]
             where = {"sheet": cell["sheet"], "row": cell["row"], "word": cell.get("word") or item["plain"]}
             key, rest, how = read_choice(kind, cell.get("decision"))
             cap = read_capital(cell.get("capital")) if kind in ("clash", "new") else None
@@ -632,7 +722,8 @@ def answers_from_report(review: dict, filled: dict) -> dict:
             per_row.append({"option": k, "choice": key, "cap": cap, "spelling": spell, "where": where})
         if BLANK[kind] == "pending" and not any(r in cells for r in item_refs):
             out["missing"].append(item["plain"])     # its rows were deleted from the file: it goes to pending
-        d = {"choice": BLANK[kind], "option": 0, "cap": None, "spelling": "", "note": " · ".join(notes)}
+        d = {"choice": BLANK[kind], "option": 0, "cap": None, "spelling": "", "note": " · ".join(notes),
+             "also": also, "also_bad": also_bad}
         chosen = [r for r in per_row if r["choice"] is not None]
         if problems:
             out["unclear"] += [p | {"plain": item["plain"]} for p in problems]
@@ -660,7 +751,41 @@ def answers_from_report(review: dict, filled: dict) -> dict:
                 r = blank[0]
                 d.update(option=r["option"], cap=r["cap"], spelling=r["spelling"])
         out["rows"][item["id"]] = d
+    out["extra"] = [_own_row(x, out) for x in filled.get("extra") or []]
+    out["extra_cells"] = filled.get("extra") or []
     return out
+
+
+def _own_row(x: dict, out: dict) -> dict:
+    """A row typed in by hand on 'New words': {id, word, plain, choice ('add'|'pending'|'skip'), code, note, also,
+    also_bad, where} or, when it can't be used, {.., why}. Decisions read from someone's own words go to
+    out['words']."""
+    where = {"sheet": x["sheet"], "row": x["row"]}
+    text = x.get("spelling") or x.get("word") or ""
+    word = x.get("word") or x.get("spelling") or x.get("plain") or ""
+    plain = clean_plain(x["plain"]) if x.get("plain") else clean_plain(harvest.plain_typed(word))
+    key, rest, how = read_choice("new", x.get("decision"))
+    cap = read_capital(x.get("capital"))
+    result, bad = spelling(text)
+    note = " ".join(v for v in (rest if how == "words" else "", x.get("notes") or "") if v).strip()
+    also, also_bad = split_also(x.get("also"), plain)
+    own = {"id": f"own{x['row']}", "word": word, "plain": plain, "choice": key or "pending", "code": "", "note": note,
+           "also": also, "also_bad": also_bad, "where": where}
+    why = ("there is no word with its marks in the “Word” column" if not text else
+           f"“{x.get('decision')}” isn't Add, Pending or Skip" if how == "unclear" else
+           "the Capital column isn't Normal or Always capital" if cap == "?" else
+           bad or (f"the plain word “{plain}” has letters our list can't use" if not PLAIN_OK.fullmatch(plain)
+                   else None))
+    if why:
+        return own | {"why": why}
+    if cap is None:
+        cap = capital_in_words(rest) or capital_in_words(x.get("notes"))
+    if how == "words":
+        out["words"].append(where | {"word": word, "typed": " · ".join(v for v in (x.get("decision"), x.get("notes"))
+                                                                         if v),
+                                     "read": label("new", key) + (f" · {CAP_LABEL[cap]}" if cap in CAP_LABEL else "")})
+    own["code"] = harvest.with_type(result, cap if cap in ("normal", "capital") else "normal")
+    return own
 
 
 def compose(result_text: str, cap: str | None, entry: str | None) -> str:
@@ -678,11 +803,12 @@ def compose(result_text: str, cap: str | None, entry: str | None) -> str:
 
 def _empty_plan() -> dict:
     return {"add": [], "update": [], "delete": [], "pending": [], "resolve": [], "remove": [], "notes": {},
-            "skipped": [], "unclear": [], "words": [], "missing": [], "stay": 0}
+            "also_set": {}, "also_left": [], "own_left": [], "skipped": [], "unclear": [], "words": [], "missing": [],
+            "stay": 0}
 
 
-def _guard(out: dict) -> None:
-    """A word that two rows want to change differently is left alone (listed as unclear)."""
+def _guard(out: dict) -> set:
+    """A word that two rows want to change differently is left alone (listed as unclear). Returns those words."""
     targets = {}
     for op in ("add", "update", "delete"):
         for c in out[op]:
@@ -699,38 +825,91 @@ def _guard(out: dict) -> None:
     for p in sorted(bad):
         out["unclear"].append({"sheet": "", "row": "", "word": p, "plain": p, "typed": "",
                                "why": "two rows want to change this word differently: nothing is changed"})
+    return bad
+
+
+def _also(out: dict, wants: list[dict], current: dict[str, str], own: set[str]) -> None:
+    """The other ways of typing ('Also typed as') as adds with exactly the code their word ends up with. wants:
+    [{plain, item, also: [typed words], bad: [parts that can't be a plain word], code: the word's entry after Apply
+    or None, why: why not used when code is None}]. A typed word already in the list with that code needs nothing;
+    with another code it is left as it is; one given for two words with different codes, or that has its own row in
+    the same file, isn't added. Everything not added is listed in out['also_left'] ({plain, typed, why})."""
+    left = out["also_left"]
+    by_typed = {}
+    for w in wants:
+        for raw in w.get("bad") or []:
+            left.append({"plain": w["plain"], "typed": raw,
+                         "why": f"“{raw}” can't be a typed word (only letters a-z, spaces, hyphens and apostrophes), "
+                                "so it wasn't added."})
+        also = w.get("also") or []
+        if not also:
+            continue
+        if w["code"] is None:
+            if w.get("why"):
+                left.append({"plain": w["plain"], "typed": ", ".join(also), "why": f"not used, because {w['why']}."})
+            continue
+        for v in also:
+            if v in own:
+                left.append({"plain": w["plain"], "typed": v,
+                             "why": f"{v} has its own row in this file, so it wasn't added as another way of typing "
+                                    f"{w['plain']}."})
+            else:
+                by_typed.setdefault(v, []).append(w)
+    for v, ws in by_typed.items():
+        first = ws[0]
+        if len({w["code"] for w in ws}) > 1:
+            names = sorted({w["plain"] for w in ws})
+            left.append({"plain": ", ".join(names), "typed": v,
+                         "why": f"{v} was given for {' and '.join(names)}, which get different results, so it wasn't "
+                                "added."})
+            continue
+        now = current.get(v)
+        if now == first["code"]:
+            continue                                  # already in the list exactly so: nothing to do
+        if now is not None:
+            left.append({"plain": first["plain"], "typed": v,
+                         "why": f"{v} is already in the list as {harvest.describe(now)}, so it was left as it is; "
+                                "change it on the Mappings page if needed."})
+            continue
+        out["add"].append({"plain": v, "result": first["code"], "item": first["item"], "also_for": first["plain"]})
 
 
 def plan(review: dict, answers: dict, current: dict[str, str], source: str = "") -> dict:
-    """What Apply does with a report's answers, against the list as it is now: {'add': [{plain, result, item}],
-    'update': [{plain, old, result, item}], 'delete': [{plain, old, item}], 'pending': [{plain, suggested, reason,
-    source, page, context, notes, item}], 'resolve': [plain words confirmed as they are], 'skipped': [{plain, then,
-    now, wanted}] (changed in the list since the report was made), 'unclear', 'words', 'missing'}."""
+    """What Apply does with a report's answers, against the list as it is now: {'add': [{plain, result, item,
+    also_for (when it is another way of typing that word)}], 'update': [{plain, old, result, item}], 'delete':
+    [{plain, old, item}], 'pending': [{plain, suggested, reason, source, page, context, notes, also, item}], 'resolve':
+    [plain words confirmed as they are], 'skipped': [{plain, then, now, wanted}] (changed in the list since the report
+    was made), 'also_left' (other ways of typing not added, with why), 'unclear', 'words', 'missing'}."""
     out = _empty_plan()
     out["unclear"] = list(answers.get("unclear", []))
     out["words"] = list(answers.get("words", []))
     out["missing"] = list(answers.get("missing", []))
     rows = answers.get("rows", {})
+    wants = []
 
-    def change(item, then, new):
+    def change(item, then, new) -> bool:
+        """Plan the change; True when the word's entry will be `new` after Apply."""
         plain = item["plain"]
         now = current.get(plain)
         if new == then:
-            return
+            return now == then
         if now != then:
             out["skipped"].append({"plain": plain, "then": then, "now": now, "wanted": new})
+            return False
         elif then is None:
             out["add"].append({"plain": plain, "result": new, "item": item["id"]})
         elif new is None:
             out["delete"].append({"plain": plain, "old": then, "item": item["id"]})
         else:
             out["update"].append({"plain": plain, "old": then, "result": new, "item": item["id"]})
+        return True
 
     def pend(item, d, suggested, reason, row=None):
         row = row or item
         out["pending"].append({"plain": item["plain"], "suggested": suggested, "reason": reason, "source": source,
                                "page": row.get("where", ""), "context": row.get("line", ""),
-                               "notes": d.get("note", ""), "item": item["id"]})
+                               "notes": d.get("note", ""), "also": ", ".join(d.get("also") or []),
+                               "item": item["id"]})
 
     for item in _items(review):
         kind = item["kind"]
@@ -740,6 +919,17 @@ def plan(review: dict, answers: dict, current: dict[str, str], source: str = "")
         options = item.get("options") or []
         k = max(0, min(k, len(options) - 1))
         row = (item.get("rows") or [None] * len(options))[k] if kind in ("clash", "new") else None
+        # the code the word's entry ends up with (its other ways of typing get it), or why they aren't used
+        want = {"plain": item["plain"], "item": item["id"], "also": d.get("also") or [], "bad": d.get("also_bad") or [],
+                "code": None, "why": "the word was skipped"}
+        wants.append(want)
+        changed_meanwhile = f"{item['plain']} was changed in the list after this file was made"
+
+        def keeps(then, new):
+            if change(item, then, new):
+                want["code"] = new
+            else:
+                want["why"] = changed_meanwhile
         if kind == "clash":
             capitalised = (row or item)["form"][:1].isupper()
             result = spell or options[k]
@@ -749,48 +939,107 @@ def plan(review: dict, answers: dict, current: dict[str, str], source: str = "")
                 differs = ", ".join(f["form"] for f in item["forms"] if f["status"] == "differs")
                 pend(item, d, suggested, f"Different from our list: the document has {differs}; our list gives "
                                          f"{item['gives']}", row)
+                want["why"] = None                    # they go with the word to the pending list
             elif choice == "list":
-                if entry and cap in ("normal", "capital"):
-                    change(item, entry, harvest.with_type(entry, cap))
+                if entry is None:
+                    want["why"] = f"{item['plain']} has no entry of its own in the list"
+                else:
+                    keeps(entry, harvest.with_type(entry, cap) if cap in ("normal", "capital") else entry)
                 out["resolve"].append(item["plain"])
             elif choice == "doc":
                 if entry is None:
-                    change(item, None, harvest.with_type(result, cap if cap in ("normal", "capital") else "normal"))
+                    keeps(None, harvest.with_type(result, cap if cap in ("normal", "capital") else "normal"))
                 else:
-                    change(item, entry, harvest.with_type(harvest.replace_result(entry, result, capitalised),
-                                                          cap or "keep"))
+                    keeps(entry, harvest.with_type(harvest.replace_result(entry, result, capitalised), cap or "keep"))
         elif kind == "new":
             result = spell or options[k]
             code = harvest.with_type(result, cap if cap in ("normal", "capital") else "normal")
             if choice == "add":
-                change(item, None, code)
+                keeps(None, code)
             elif choice == "pending":
                 spelt = item.get("spellings") or []
                 pend(item, d, code, "New word: not in our list" + (
                     f" (the document spells it {' and '.join(spelt)})" if len(options) > 1 else ""), row)
+                want["why"] = None
         elif kind == "unmarked":
             if choice == "pending":
                 pend(item, d, spell or entry or "", f"Written without marks in the document ({item['form']}); "
                                                     f"our list gives {item['gives']}")
+                want["why"] = None
         elif kind == "lnew":
             if choice == "add":
-                change(item, None, item["result"])
+                keeps(None, item["result"])
             elif choice == "pending":
                 pend(item, d, item["result"], "New in an uploaded list", {"where": f"row {item['row']}", "line": ""})
+                want["why"] = None
         elif kind == "lchanged":
             if choice == "use":
-                change(item, entry, item["result"])
+                keeps(entry, item["result"])
             elif choice == "keep":
+                keeps(entry, entry)
                 out["resolve"].append(item["plain"])
             elif choice == "pending":
                 pend(item, d, item["result"], f"Changed in an uploaded list; our list has {harvest.describe(entry)}",
                      {"where": f"row {item['row']}", "line": ""})
+                want["why"] = None
         elif kind == "lmissing":
             if choice == "delete":
                 change(item, entry, None)
+                want["why"] = "the word is deleted"
+            else:
+                keeps(entry, entry)
+    in_file = {i["plain"] for i in _items(review)}
+    own_words = _own_rows(out, answers.get("extra") or [], current, in_file, wants, pend)
     out["resolve"] += [u["plain"] for u in review["sections"].get("unchanged", [])]
-    _guard(out)
+    for p in _guard(out):
+        for w in wants:
+            if w["plain"] == p:
+                w.update(code=None, why=f"{p} itself isn't changed (two rows want different things)")
+    _also(out, wants, current, in_file | own_words)
     return out
+
+
+def _own_rows(out: dict, extra: list[dict], current: dict[str, str], in_file: set[str], wants: list, pend) -> set:
+    """Words typed in on their own rows of 'New words', treated like new words: Add (when the plain word isn't in
+    the list yet) or Pending. Not added, and listed in out['own_left'] ({word, plain, sheet, row, why}): a plain word
+    already in the list, or with a row of its own in the report, or typed on two rows with different results, and
+    rows that can't be read. Returns their plain words."""
+    groups = {}
+    for x in extra:
+        if x.get("why"):
+            out["own_left"].append({"word": x["word"], "plain": x["plain"], **x["where"],
+                                    "why": f"not added: {x['why']}."})
+        elif x["choice"] != "skip":
+            groups.setdefault(x["plain"], []).append(x)
+    for plain, xs in groups.items():
+        first = xs[0]
+        want = {"plain": plain, "item": first["id"], "also": first["also"], "bad": first["also_bad"], "code": None,
+                "why": f"{plain} itself wasn't added"}
+        wants.append(want)
+        now = current.get(plain)
+        why = None
+        if plain in in_file:
+            why = f"{plain} has its own row in this report, so this row was left out; decide it there."
+        elif len({(x["choice"], x["code"]) for x in xs}) > 1:
+            why = f"{plain} is typed on more than one of your own rows, with different results, so none was used."
+        elif first["choice"] == "pending":
+            pend({"plain": plain, "id": first["id"]}, {"note": first["note"], "also": first["also"]}, first["code"],
+                 f"Typed in on the report's “New words” sheet (row {first['where']['row']})")
+            want["why"] = None
+        elif now == first["code"]:
+            why = f"{plain} is already in the list exactly like this, so nothing changes."
+            want["code"] = now
+        elif now is not None:
+            why = (f"{plain} is already in the list as {harvest.describe(now)}, so it was left as it is; change it on "
+                   "the Mappings page if needed.")
+        else:
+            out["add"].append({"plain": plain, "result": first["code"], "item": first["id"],
+                               "own_row": f"{first['where']['sheet']}, row {first['where']['row']}"})
+            want["code"] = first["code"]
+        if why:
+            for x in xs:
+                out["own_left"].append({"word": x["word"], "plain": plain, **x["where"], "why": why})
+    return set(groups)
 
 
 def answers_from_pending(filled: dict) -> dict:
@@ -800,11 +1049,14 @@ def answers_from_pending(filled: dict) -> dict:
 
 def plan_pending(answers: dict, open_items: dict[int, dict], current: dict[str, str]) -> dict:
     """What Apply does with a filled pending list, against the list and the pending list as they are now. Like plan(),
-    plus 'remove' (pending ids taken off), 'done' (pending ids answered by a change), 'notes' ({id: new notes})."""
+    plus 'remove' (pending ids taken off), 'done' (pending ids answered by a change), 'notes' ({id: new notes}),
+    'also_set' ({id: its new 'Also typed as'}). An item answered Add brings its other ways of typing (the column as it
+    is in the file; a file made before the column existed: what the item carries) with the same code."""
     out = _empty_plan()
     out["done"] = []
     snapshot, cells = answers["snapshot"], answers["cells"]
-    wanted = {}
+    wanted, wants = {}, []
+    own = {snapshot[ref]["plain"] for ref in cells if ref in snapshot}
     for ref, cell in cells.items():
         snap = snapshot.get(ref)
         if snap is None or not ref.isdigit():
@@ -820,6 +1072,12 @@ def plan_pending(answers: dict, open_items: dict[int, dict], current: dict[str, 
             continue
         if (cell.get("notes") or "") != (item.get("notes") or ""):
             out["notes"][item["id"]] = cell.get("notes") or ""
+        typed = cell.get("also")
+        if typed is None:                             # no such column in this file: what the item carries
+            typed = item.get("also") or ""
+        elif also_text(typed, snap["plain"]) != also_text(item.get("also"), snap["plain"]):
+            out["also_set"][item["id"]] = also_text(typed, snap["plain"])
+        good, bad = split_also(typed, snap["plain"])
         if how == "unclear":
             out["unclear"].append(where | {"typed": cell.get("decision"), "why": "not one of the choices"})
             out["stay"] += 1
@@ -829,13 +1087,15 @@ def plan_pending(answers: dict, open_items: dict[int, dict], current: dict[str, 
                                          "Stays pending"})
         if key == "remove":
             out["remove"].append(item["id"])
+            wants.append({"plain": snap["plain"], "item": item["id"], "also": good, "bad": [], "code": None,
+                          "why": "the word was taken off the pending list"})
             continue
         if key != "add":
             out["stay"] += 1
             continue
         cap = read_capital(cell.get("capital"))
-        spell, bad = spelling(cell.get("result"))
-        why = ("“Add” was chosen but “Result” is empty" if not spell else bad or
+        spell, bad_spelling = spelling(cell.get("result"))
+        why = ("“Add” was chosen but “Result” is empty" if not spell else bad_spelling or
                ("the Capital column isn't Normal or Always capital" if cap == "?" else None))
         if why:
             out["unclear"].append(where | {"typed": cell.get("result") or cell.get("decision"), "why": why})
@@ -843,49 +1103,63 @@ def plan_pending(answers: dict, open_items: dict[int, dict], current: dict[str, 
             continue
         then = snap["entry"] or None
         code = compose(spell, cap if cap in ("normal", "capital") else None, then)
-        wanted.setdefault(snap["plain"], []).append((item["id"], then, code, where))
+        want = {"plain": snap["plain"], "item": item["id"], "also": good, "bad": bad, "code": None, "why": None}
+        wants.append(want)
+        wanted.setdefault(snap["plain"], []).append((item["id"], then, code, where, want))
     for plain, asks in sorted(wanted.items()):
-        codes = {code for _, _, code, _ in asks}
+        codes = {code for _, _, code, _, _ in asks}
         if len(codes) > 1:
-            for _, _, code, where in asks:
+            for _, _, code, where, want in asks:
                 out["unclear"].append(where | {"typed": harvest.describe(code), "why": "two rows of this word give "
                                                                                       "different results"})
+                want["why"] = f"{plain} itself isn't changed (its rows give different results)"
             out["stay"] += len(asks)
             continue
-        ids = [i for i, _, _, _ in asks]
+        ids = [i for i, _, _, _, _ in asks]
         then, code = asks[0][1], asks[0][2]
         now = current.get(plain)
         if now != then:
             out["skipped"].append({"plain": plain, "then": then, "now": now, "wanted": code})
             out["stay"] += len(asks)
-        elif now == code:
+            for *_, want in asks:
+                want["why"] = f"{plain} was changed in the list after this file was made"
+            continue
+        if now == code:
             out["resolve"].append(plain)
-            out["done"] += ids
         elif now is None:
             out["add"].append({"plain": plain, "result": code, "item": ids[0]})
-            out["done"] += ids
         else:
             out["update"].append({"plain": plain, "old": now, "result": code, "item": ids[0]})
-            out["done"] += ids
+        out["done"] += ids
+        for *_, want in asks:
+            want["code"] = code
+    _also(out, wants, current, own)
     return out
 
 
 def fingerprint(p: dict) -> str:
     """What Apply will do, as a short hash: the confirm page sends it back, so nothing different is applied."""
     keep = {k: p.get(k) for k in ("add", "update", "delete", "remove", "done", "resolve")}
-    keep["pending"] = [(x["plain"], x["suggested"]) for x in p.get("pending", [])]
+    keep["pending"] = [(x["plain"], x["suggested"], x.get("also") or "") for x in p.get("pending", [])]
     keep["notes"] = sorted((p.get("notes") or {}).items())
+    keep["also_set"] = sorted((p.get("also_set") or {}).items())
     return hashlib.sha256(json.dumps(keep, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()[:20]
 
 
 def sentence(p: dict, *, done: bool = False) -> str:
-    """'This will add 3 words, change 2, and put 130 on the pending list.' (done: 'Applied: added 3 words, …')"""
+    """'This will add 5 words (2 of them other ways of typing a word), change 2, and put 130 on the pending list.'
+    (done: 'Applied: added 5 words …')"""
     def n(k, one, many):
         return f"{k:,} {one if k == 1 else many}"
     verbs = ("added", "changed", "deleted", "put", "took") if done else ("add", "change", "delete", "put", "take")
     parts = []
     if p["add"]:
-        parts.append(f"{verbs[0]} {n(len(p['add']), 'word', 'words')}")
+        total, also = len(p["add"]), sum(1 for c in p["add"] if c.get("also_for"))
+        way = "other ways of typing a word"
+        extra = ("" if not also else " (another way of typing a word)" if total == also == 1 else
+                 f" (both {way})" if total == also == 2 else f" (all {way})" if total == also else
+                 " (1 of them another way of typing a word)" if also == 1 else f" ({also:,} of them {way})")
+        parts.append(f"{verbs[0]} {n(total, 'word', 'words')}{extra}")
     if p["update"]:
         parts.append(f"{verbs[1]} {len(p['update']):,}")
     if p["delete"]:

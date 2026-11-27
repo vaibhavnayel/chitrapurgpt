@@ -14,7 +14,8 @@ Support tables (created if missing; every row has list_name 'trial' or 'live', s
                status open | applied | undone | cancelled
   dia_batch    one change to the list (kind review | pending | undo | reset), who and when, undone or not
   dia_change   the entries a batch changed, with the values before and after (what undo puts back)
-  dia_pending  words waiting for the Diacriticals team (with notes), until resolved
+  dia_pending  words waiting for the Diacriticals team (with notes, and 'also': other ways of typing the word, added
+               with it when it is answered Add), until resolved
 The old diacritic_mapping_changes table (used by the clean-up scripts) is never touched.
 Every write takes a per-list advisory lock; Apply works out its plan again under the lock against the list as it is
 then, and refuses if that isn't what the confirm page showed (sheets.fingerprint).
@@ -116,6 +117,7 @@ def ensure_tables(conn, name: str) -> None:
         CREATE INDEX IF NOT EXISTS dia_pending_plain ON dia_pending(list_name, plain_text);
         ALTER TABLE dia_pending ADD COLUMN IF NOT EXISTS notes text NOT NULL DEFAULT '';
         ALTER TABLE dia_pending ADD COLUMN IF NOT EXISTS resolved_batch int;
+        ALTER TABLE dia_pending ADD COLUMN IF NOT EXISTS also text NOT NULL DEFAULT '';
     """)
     if name == "trial" and not _exists(conn, TRIAL_TABLE):
         conn.execute(sql.SQL("""
@@ -354,6 +356,9 @@ def apply(conn, name: str, review_id: int, by: str, fingerprint: str) -> dict:
     pending_upload = rv["kind"] == "pending"
     parts = [f"{len(p[k])} {label}" for k, label in (("add", "added"), ("update", "changed"), ("delete", "deleted"))
              if p[k]]
+    ways = sum(1 for c in p["add"] if c.get("also_for"))
+    if ways:
+        parts[0] += f" ({ways} of them other ways of typing)" if ways > 1 else " (1 of them another way of typing)"
     if p["pending_new"]:
         parts.append(f"{len(p['pending_new'])} put on the pending list")
     if p.get("remove"):
@@ -379,17 +384,26 @@ def apply(conn, name: str, review_id: int, by: str, fingerprint: str) -> dict:
                      (by, batch, pid, name))
     for pid, notes in (p.get("notes") or {}).items():
         conn.execute("UPDATE dia_pending SET notes = %s WHERE id = %s AND list_name = %s", (notes, int(pid), name))
+    for pid, also in (p.get("also_set") or {}).items():
+        conn.execute("UPDATE dia_pending SET also = %s WHERE id = %s AND list_name = %s", (also, int(pid), name))
     for item in p["pending"]:
         if item not in p["pending_new"] and item.get("notes"):   # already waiting: its notes get the new remark
             conn.execute("UPDATE dia_pending SET notes = CASE WHEN notes = '' THEN %s ELSE notes || ' · ' || %s END "
                          "WHERE list_name = %s AND plain_text = %s AND suggested = %s AND resolved_at IS NULL "
                          "AND position(%s in notes) = 0",
                          (item["notes"], item["notes"], name, item["plain"], item["suggested"], item["notes"]))
+        if item not in p["pending_new"] and item.get("also"):  # already waiting: it takes the other ways of typing too
+            for row in conn.execute("SELECT id, also FROM dia_pending WHERE list_name = %s AND plain_text = %s AND "
+                                    "suggested = %s AND resolved_at IS NULL",
+                                    (name, item["plain"], item["suggested"])).fetchall():
+                merged = sheets.also_text(", ".join(x for x in (row["also"], item["also"]) if x), item["plain"])
+                if merged != row["also"]:
+                    conn.execute("UPDATE dia_pending SET also = %s WHERE id = %s", (merged, row["id"]))
     for item in p["pending_new"]:
         conn.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason, source, page, context, notes, "
-                     "added_by, review_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                     "also, added_by, review_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                      (name, item["plain"], item["suggested"], item["reason"], item["source"], item["page"],
-                      item["context"], item.get("notes") or "", by, review_id))
+                      item["context"], item.get("notes") or "", item.get("also") or "", by, review_id))
     conn.execute(f"UPDATE dia_review SET status = 'applied', accepted_by = %s, accepted_at = {NOW}, batch_id = %s "
                  "WHERE id = %s", (by, batch, review_id))
     return {"batch": batch, "plan": p}

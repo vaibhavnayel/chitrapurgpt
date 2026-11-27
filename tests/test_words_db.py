@@ -317,3 +317,59 @@ def test_live_mode_changes_the_real_list_and_never_mixes(db, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", db)
     with pytest.raises(wordlist.NotConfigured, match="refusing"):
         run(wordlist.entries)
+
+
+
+def test_also_typed_as_and_own_rows_apply_carry_over_and_undo(db):
+    from test_words_harvest import add_rows, rows_of, workbook
+    with psycopg.connect(db) as c:                 # the live database had dia_pending before the 'also' column
+        c.execute("""CREATE TABLE dia_pending (id serial PRIMARY KEY, list_name text NOT NULL, plain_text text NOT NULL,
+                     suggested text NOT NULL DEFAULT '', reason text NOT NULL DEFAULT '',
+                     source text NOT NULL DEFAULT '', page text NOT NULL DEFAULT '', context text NOT NULL DEFAULT '', added_by text,
+                     added_at timestamp NOT NULL DEFAULT now(), resolved_by text, resolved_at timestamp,
+                     resolution text, review_id int)""")
+        c.execute("INSERT INTO dia_pending (list_name, plain_text, suggested, reason) "
+                  "VALUES ('trial', 'ganesha', '{{}}{{gaṇesha}}', 'asked before')")
+    run(lambda c, n: c.execute("UPDATE dia_pending SET also = 'ganesa' WHERE plain_text = 'ganesha'"))  # first use
+    rid = make_review()
+    data = add_rows(fill(report(rid), {
+        (NEW, "dipa"): {"Your decision": "Add", "Also typed as": "deepa"},
+        (DIFF, "krshna"): {"Your decision": "Our list is right", "Also typed as": "krushna, krishna"},
+        (NEW, "ganesha"): {"Also typed as": "ganesh"},                      # pending (already waiting): they go along
+        (NEW, "akarta"): {"Your decision": "Skip", "Also typed as": "akartaa"}}),
+        NEW, [{"Word (as in the document)": "āvaraṇa-s", "Your decision": "Add"}])
+    p = upload(rid, {}, data=data)
+    assert sheets.sentence(p) == "This will add 4 words (2 of them other ways of typing a word) and put 1 on the " \
+                                 "pending list."
+    assert {x["typed"] for x in p["also_left"]} == {"krishna", "akartaa"}
+    done = apply(rid, p)
+    w = words()
+    assert w["deepa"] == w["dipa"] == "dīpa" and w["krushna"] == w["krshna"] == "{{}}{{kṛs͟hṇa}}"
+    assert w["avarana-s"] == "āvaraṇa-s" and w["krishna"] == "kṛs͟hṇa" and "akartaa" not in w
+    batch = run(lambda c, n: wordlist.get_batch(c, n, done["batch"]))
+    assert batch["summary"] == (f"Report {rid} (talk.docx): 4 added (2 of them other ways of typing), "
+                                "1 put on the pending list")
+    pending = {x["plain_text"]: x for x in run(wordlist.pending)}
+    assert set(pending) == {"atma", "ganesha"} and pending["ganesha"]["also"] == "ganesa, ganesh"   # merged
+
+    # the pending list shows them; Add brings them with the same code
+    raw = run(lambda c, n: sheets.pending_xlsx(wordlist.pending(c, n), wordlist.mappings(c, n),
+                                               {"list": n, "when": str}))
+    assert {r["Plain word"]: r["Also typed as"] for r in rows_of(workbook(raw)["Pending"])}["ganesha"] == \
+        "ganesa, ganesh"
+    filled = sheets.read_filled("pending.xlsx", fill(raw, {("Pending", "ganesha"): {"Your decision": "Add"}}))
+    pid = run(lambda c, n: wordlist.store_pending_answers(c, n, filled, BY, "pending.xlsx"))
+    p2 = run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, pid)))
+    assert sheets.sentence(p2) == "This will add 3 words (2 of them other ways of typing a word) and take 1 off " \
+                                  "the pending list."
+    second = apply(pid, p2)
+    w = words()
+    assert w["ganesha"] == w["ganesa"] == w["ganesh"] == "{{}}{{gaṇesha}}"
+
+    # undo takes the other ways of typing away with their word
+    run(lambda c, n: wordlist.undo(c, n, second["batch"], BY))
+    assert not {"ganesha", "ganesa", "ganesh"} & set(words())
+    pending = {x["plain_text"]: x for x in run(wordlist.pending)}
+    assert pending["ganesha"]["also"] == "ganesa, ganesh"                   # back on the list, with them
+    run(lambda c, n: wordlist.undo(c, n, done["batch"], BY))
+    assert words() == dict(LIVE)

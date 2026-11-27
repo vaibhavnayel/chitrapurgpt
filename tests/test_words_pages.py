@@ -220,3 +220,34 @@ def test_refusals_and_cancel(client, monkeypatch):
     monkeypatch.setenv("DIACRITICAL_WORDS_LIST", "trial")
     r = client.post("/admin/words/reset-trial", data={"csrf": csrf()})
     assert r.status_code == 303 and "same as the real list" in flash(r)
+
+
+
+def test_confirm_page_shows_other_ways_of_typing_and_own_rows(client):
+    from test_words_harvest import add_rows
+    rid = upload_doc(client)
+    report = client.get(f"/admin/words/report/{rid}.xlsx").content
+    data = add_rows(fill(report, {("New words", "dipa"): {"Your decision": "Add", "Also typed as": "deepa, krishna"},
+                                  ("New words", "akarta"): {"Your decision": "Skip", "Also typed as": "akartaa"}}),
+                    "New words", [{"Word (as in the document)": "āvaraṇa-s", "Your decision": "Add"},
+                                  {"Word (as in the document)": "Pūjā", "Your decision": "Add"}])
+    r = send_decisions(client, data)
+    page = client.get(r.headers["location"]).text
+    assert "This will add 3 words (1 of them another way of typing a word) and put 4 on the pending list." in page
+    assert "(also typed as, for dipa)" in page and "your own row: New words, row" in page
+    assert "Other ways of typing, not added (2)" in page
+    assert "krishna is already in the list as kṛs͟hṇa, so it was left as it is; change it on the Mappings page if " \
+           "needed." in page
+    assert "not used, because the word was skipped." in page
+    assert "Words you typed in, not added (1)" in page and "puja is already in the list exactly like this" in page
+    r = client.post(r.headers["location"], data={"csrf": csrf(), "action": "apply", "fingerprint": fingerprint(page)})
+    assert flash(r).startswith("Applied: added 3 words (1 of them another way of typing a word)"), flash(r)
+    whole = workbook(client.get("/admin/words/list.xlsx").content)
+    listed = {row[0]: row[1] for row in whole.active.iter_rows(min_row=2, values_only=True)}
+    assert listed["deepa"] == listed["dipa"] == "dīpa" and listed["avarana-s"] == "āvaraṇa-s"
+    again = workbook(client.get(f"/admin/words/report/{rid}.xlsx").content)       # the record keeps them
+    rows = rows_of(again["New words"])
+    assert {r["Plain word"]: r["Also typed as"] for r in rows}["dipa"] == "deepa, krishna"
+    assert rows[-2]["Word (as in the document)"] == "āvaraṇa-s"
+    history = client.get("/admin/words/history").text
+    assert "3 added (1 of them another way of typing)" in history
