@@ -176,7 +176,7 @@ def test_pending_list_download_and_upload(client):
     data = fill(pending.content, {("Pending", "dipa"): {"Your decision": "Add", "Result": "dīpā"},
                                   ("Pending", "krshna"): {"Your decision": "Add"},
                                   ("Pending", "akarta"): {"Your decision": "Remove from pending"},
-                                  ("Pending", "ganesha"): {"Notes": "ask the team"}})
+                                  ("Pending", "ganesha"): {"Notes for self": "ask the team"}})
     r = send_decisions(client, data, "pending.xlsx")
     page = client.get(r.headers["location"]).text
     assert "This will add 1 word, change 1, and take 3 off the pending list." in page
@@ -184,7 +184,7 @@ def test_pending_list_download_and_upload(client):
     assert flash(r).startswith("Applied: added 1 word, changed 1, and took 3 off the pending list."), flash(r)
     assert "Pending list (3 words)" in client.get("/admin/words").text
     again = rows_of(workbook(client.get("/admin/words/pending.xlsx").content)["Pending"])
-    assert {row["Plain word"]: row["Notes"] for row in again}["ganesha"] == "ask the team"
+    assert {row["Plain word"]: row["Notes for self"] for row in again}["ganesha"] == "ask the team"
     history = client.get("/admin/words/history").text
     assert "Pending list answers (pending.xlsx): 1 added, 1 changed, 1 removed from the pending list" in history
 

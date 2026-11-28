@@ -138,7 +138,7 @@ def test_apply_from_a_filled_report(db):
                      (DIFF, "atma"): {"Your decision": "Our list is right", "Capital": "Always capital"},
                      (NEW, "akarta"): {"Your decision": "Add", "Capital": "Always capital"},
                      (NEW, "dipa"): {"Your decision": "Add"},
-                     (NEW, "ganesha"): {"Notes": "ask the team"},                 # blank: pending, with the note
+                     (NEW, "ganesha"): {"Notes for self": "ask the team"},                 # blank: pending, with the note
                      (UNMARKED, "chitrapur"): {"Your decision": "Pending"}})
     assert sheets.sentence(p) == ("This will add 2 words, change 2, put 2 on the pending list, and take 1 off the "
                                   "pending list.")                             # akarta: it is added
@@ -246,7 +246,7 @@ def test_the_pending_list_round_trip(db):
     filled = pending_file({("Pending", "ganesha"): {"Your decision": "Add"},
                            ("Pending", "dipa"): {"Your decision": "Add", "Result": "Dīpā"},
                            ("Pending", "seva"): {"Your decision": "Remove from pending"},
-                           ("Pending", "krshna"): {"Notes": "the team is checking"}})
+                           ("Pending", "krshna"): {"Notes for self": "the team is checking"}})
     pid = run(lambda c, n: wordlist.store_pending_answers(c, n, filled, BY, "pending.xlsx"))
     p = run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, pid)))
     assert sheets.sentence(p) == "This will add 2 words and take 3 off the pending list."

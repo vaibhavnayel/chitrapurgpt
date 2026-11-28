@@ -342,7 +342,7 @@ def test_report_layout_drop_downs_and_hidden_parts():
     clash = wb["Different from our list"]
     heads = [c.value for c in clash[2]]
     assert heads == ["Word (as in the document)", "Plain word", "Times", "Pages", "Example line", "Our list gives",
-                     "Your decision", "Capital", "Correct spelling", "Also typed as", "Notes", "Ref"]
+                     "Your decision", "Capital", "Correct spelling", "Also typed as", "Notes for self", "Ref"]
     assert clash.freeze_panes == "A3" and clash.auto_filter.ref.startswith("A2:L")
     assert clash.column_dimensions["L"].hidden                              # Ref
     last = clash.max_row
@@ -378,11 +378,11 @@ def test_reading_back_a_filled_report():
         ("Different from our list", "krshna"): {"Your decision": "Document is right"},
         ("Different from our list", "atma"): {"Your decision": "Our list is correct. Always capitalised"},
         ("Different from our list", "kanara"): {"Your decision": "maybe?"},
-        ("Different from our list", "kshama yachana"): {"Your decision": "  PENDING ", "Notes": "ask Gopal"},
+        ("Different from our list", "kshama yachana"): {"Your decision": "  PENDING ", "Notes for self": "ask Gopal"},
         ("New words", "akarta"): {"Your decision": "Add", "Capital": "Always capital", "Correct spelling": "Akartā "},
         ("New words", "dipa"): {"Your decision": "add", "Capital": None, "Correct spelling": "dīpā"},
         ("New words", "ganesha"): {"Your decision": "Skip"},
-        ("Written without marks", "chitrapur"): {"Your decision": "Pending", "Notes": "registered name"},
+        ("Written without marks", "chitrapur"): {"Your decision": "Pending", "Notes for self": "registered name"},
     }, reverse=("Different from our list", "New words"), delete=("abhokta",))
     filled = sheets.read_filled("talk-filled.xlsx", data)
     assert filled["kind"] == "report" and filled["review"] == 7 and filled["list"] == "trial"
@@ -516,7 +516,7 @@ def test_pending_list_round_trip():
     rows = {row["Plain word"]: row for row in rows_of(ws)}
     assert rows["kanara"]["Result"] == "kănarā" and rows["kanara"]["Capital"] == "Always capital"
     assert rows["kanara"]["Our list now gives"] == "Kanarā (always capital)"
-    assert rows["kanara"]["Notes"] == "asked Gopal"
+    assert rows["kanara"]["Notes for self"] == "asked Gopal"
     assert rows["dipa"]["Result"] == "dīpa" and rows["dipa"]["Capital"] is None
     assert {str(dv.sqref).split(":")[0][0]: dv.formula1 for dv in ws.data_validations.dataValidation} == {
         "I": '"Add,Remove from pending"', "L": '"Normal,Always capital"'}
@@ -526,7 +526,7 @@ def test_pending_list_round_trip():
         ("Pending", "abhokta"): {"Your decision": "Add", "Result": "Abhoktā", "Capital": None},   # blank: Normal
         ("Pending", "kanara"): {"Your decision": "Add", "Capital": None},      # blank: keeps always capital
         ("Pending", "dipa"): {"Your decision": "Remove from pending"},
-        ("Pending", "ganesha"): {"Notes": "team asked"},                       # stays, with a note
+        ("Pending", "ganesha"): {"Notes for self": "team asked"},                       # stays, with a note
         ("Pending", "seva"): {"Your decision": "perhaps"},                     # can't be read: stays
         ("Pending", "atma"): {"Your decision": "Add"},                         # its entry changed since: skipped
     }, reverse=("Pending",)))
@@ -588,7 +588,7 @@ def test_also_typed_as_column_and_start_here():
         ws = wb[title]
         heads = [c.value for c in ws[2]]
         i = heads.index("Also typed as")
-        assert heads[i - 1] == after and heads[i + 1] == "Notes", title
+        assert heads[i - 1] == after and heads[i + 1] == "Notes for self", title
         letter = ws.cell(2, i + 1).column_letter
         assert ws.column_dimensions[letter].width == 24
         assert ws[f"{letter}2"].fill.fgColor.rgb.endswith("FFF2A8") and ws[f"{letter}3"].fill.fgColor.rgb.endswith(
@@ -670,9 +670,9 @@ def test_words_typed_in_on_new_words():
         {"Word (as in the document)": "sevā", "Your decision": "Add"},
         {"Word (as in the document)": "sēva", "Your decision": "Add"},             # the same plain word, differently
         {"Word (as in the document)": "pūjā", "Plain word": "puja", "Your decision": "Add"},   # exactly as in the list
-        {"Word (as in the document)": "dhūpa", "Notes": "ask the team", "Also typed as": "dhoopa"},   # blank: pending
+        {"Word (as in the document)": "dhūpa", "Notes for self": "ask the team", "Also typed as": "dhoopa"},   # blank: pending
         {"Plain word": "foo", "Your decision": "Add"},                              # no word with marks
-        {"Notes": "just a remark"},                                                 # no word at all: ignored
+        {"Notes for self": "just a remark"},                                                 # no word at all: ignored
         {"Word (as in the document)": "tīrtha", "Your decision": "Skip"},
         {"Word (as in the document)": "mālā", "Your decision": "perhaps"},
     ])
@@ -994,8 +994,8 @@ def test_review_made_before_downloads_in_the_new_layout_with_its_decisions():
         "Baṅkīkoḍla, Baṅkīkoḍlā", "Baṅkīkoḍlā", "Always capital", None, "c3")
     assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīyā, Tṛtīya (same as our list)"
     assert rows["arati"]["Word (as in the document)"] == "ārati, āratī (same as our list)"
-    assert rows["trtiya"]["Notes"].startswith("It's spelt according to Gender.")
-    assert rows["deva"]["Notes"] == "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)"   # once, not twice
+    assert rows["trtiya"]["Notes for self"].startswith("It's spelt according to Gender.")
+    assert rows["deva"]["Notes for self"] == "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)"   # once, not twice
     assert rows["santacruz"]["Your decision"] == "Document is right" and rows["yama"]["Your decision"] == \
         "Our list is right"
     already = {x["Word (as in the document)"] for x in rows_of(wb["Already in our list"])}
@@ -1078,6 +1078,12 @@ def test_an_old_layout_filled_file_is_still_read():
                       "row": 5}}
     rows = {x["Plain word"]: x for x in rows_of(workbook(sheets.report_xlsx(items, INFO, cells))[DIFF])}
     assert (rows["deva"]["Your decision"], rows["deva"]["Capital"]) == ("Our list is right", "Normal")
-    assert rows["deva"]["Notes"] == "ask · the Dĕvā row said Your decision: Pending"
+    assert rows["deva"]["Notes for self"] == "ask · the Dĕvā row said Your decision: Pending"
     assert (rows["bankikodla"]["Your decision"], rows["bankikodla"]["Correct spelling"]) == (
         "Document is right", "Baṅkīkoḍlā")                                  # which spelling it was on
+
+
+def test_notes_column_is_notes_for_self_and_old_notes_still_read():
+    from diacritical import sheets as s
+    assert s.NOTES == "Notes for self"
+    assert s.HEADERS["notes for self"] == "notes" and s.HEADERS["notes"] == "notes"   # files made before the rename

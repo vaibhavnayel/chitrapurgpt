@@ -83,6 +83,8 @@ CAP_WORDS = {"normal": ["normal", "not always capital", "small", "small letters"
 
 YELLOW, BLUE, GREY = "FFF2A8", "DDE7F3", "E4E4E4"
 ALSO = "Also typed as"
+NOTES = "Notes for self"   # his name for it; a column headed just "Notes" (older files) is read too
+NOTES_HELP = "“Notes for self”: your own remarks. They stay with the word (also on the pending list) and change nothing."
 NEW_SHEET = "New words"
 OWN_HELP = ("To add a word that isn't in the report, type it on a new row at the bottom of “New words” (the word with "
             "its marks) and choose Add.")
@@ -457,7 +459,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                   "“Capital”: choose Always capital for names and places; blank keeps the entry as it is (for a new "
                   "word: Normal).",
                   ALSO_HELP,
-                  "“Notes” go with the word to the pending list, for the Diacriticals team."]
+                  NOTES_HELP]
         if s.get("new"):
             steps.append(OWN_HELP)
         if s.get("unmarked"):
@@ -466,7 +468,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
     else:
         if s.get("lnew") or s.get("lchanged"):
             steps.append(ALSO_HELP)
-        steps.append("“Notes” go with the word to the pending list, for the Diacriticals team.")
+        steps.append(NOTES_HELP)
     steps.append("Save this file and upload it on the dashboard under “Upload your decisions”. You'll see a summary "
                  "and an Apply button before anything in the list changes.")
     made = (f"Made {info.get('made', '')} by {info.get('by', '')}, compared with "
@@ -495,7 +497,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                                        horizontal="center" if cell.column == 2 else None)
     _print_wide(start)
 
-    pend_note = "Notes go with the word to the pending list."
+    pend_note = "Notes for self stay with the word on the pending list."
     if doc:
         if s.get("clash"):
             rows = []
@@ -512,7 +514,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                          "blank = keep as it is. " + pend_note,
                          [("Word (as in the document)", 26), ("Plain word", 16), ("Times", 7), ("Pages", 10),
                           ("Example line", 48), ("Our list gives", 24), ("Your decision", 20), ("Capital", 15),
-                          ("Correct spelling", 22), (ALSO, 24), ("Notes", 30), ("Ref", 8)], rows,
+                          ("Correct spelling", 22), (ALSO, 24), (NOTES, 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["clash"]],
                                  "Capital": [lab for _, lab in CAPITALS], "Correct spelling": None, ALSO: None})
         if s.get("new"):
@@ -533,7 +535,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                          "capital is filled in for words only seen with a capital, also mid-sentence). " + pend_note,
                          [("Word (as in the document)", 24), ("Plain word", 16), ("Times", 7), ("Pages", 10),
                           ("Example line", 52), ("Your decision", 16), ("Capital", 15), ("Correct spelling", 22),
-                          (ALSO, 24), ("Notes", 30), ("Ref", 8)], rows,
+                          (ALSO, 24), (NOTES, 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["new"]],
                                  "Capital": [lab for _, lab in CAPITALS], "Correct spelling": None, ALSO: None})
         if s.get("unmarked"):
@@ -545,7 +547,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                          "would add marks. Nothing changes in the list for these; choose Pending for a word the team "
                          "should look at. " + pend_note,
                          [("Word (as in the document)", 22), ("Plain word", 16), ("Times", 7), ("Pages", 10),
-                          ("Example line", 52), ("Our list gives", 20), ("Your decision", 20), ("Notes", 30),
+                          ("Example line", 52), ("Our list gives", 20), ("Your decision", 20), (NOTES, 30),
                           ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["unmarked"]]})
         nothing = label("unmarked", "none")
@@ -573,7 +575,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
             _table_sheet(wb, "New in your list", "In your list, not in ours. “Add” is filled in; change it to Pending "
                          "or Skip where needed. " + pend_note,
                          [("Plain word", 18), ("Result in your list", 26), ("Shown as", 30), ("Row", 7),
-                          ("Your decision", 16), (ALSO, 24), ("Notes", 30), ("Ref", 8)],
+                          ("Your decision", 16), (ALSO, 24), (NOTES, 30), ("Ref", 8)],
                          [[i["plain"], i["result"], harvest.describe(i["result"]), i["row"],
                            c(i["id"], "decision", label("lnew", "add")), c(i["id"], "also"), c(i["id"], "notes"),
                            i["id"]] for i in s["lnew"]],
@@ -582,7 +584,7 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
             _table_sheet(wb, "Changed", "In both lists, with a different result. “Your decision”: blank = Pending. "
                          + pend_note,
                          [("Plain word", 18), ("Our list gives", 30), ("Your list gives", 30), ("Row", 7),
-                          ("Your decision", 18), (ALSO, 24), ("Notes", 30), ("Ref", 8)],
+                          ("Your decision", 18), (ALSO, 24), (NOTES, 30), ("Ref", 8)],
                          [[i["plain"], harvest.describe(i["entry"]), harvest.describe(i["result"]), i["row"],
                            c(i["id"], "decision"), c(i["id"], "also"), c(i["id"], "notes"), i["id"]]
                           for i in s["lchanged"]],
@@ -641,7 +643,7 @@ def pending_xlsx(items: list[dict], current: dict[str, str], info: dict) -> byte
                  "gets the same result. Then upload this file on the dashboard under “Upload your decisions”.",
                  [("Plain word", 16), ("Suggested", 24), ("Our list now gives", 22), ("Why", 36), ("Source", 22),
                   ("Page", 8), ("Example line", 44), ("Added", 16), ("Your decision", 18), ("Result", 22),
-                  (ALSO, 24), ("Capital", 15), ("Notes", 30), ("Ref", 8)], rows,
+                  (ALSO, 24), ("Capital", 15), (NOTES, 30), ("Ref", 8)], rows,
                  decide={"Your decision": [lab for _, lab in CHOICES["pending"]], "Result": None, ALSO: None,
                          "Capital": [lab for _, lab in CAPITALS]})
     _dashboard_sheet(wb, [("kind", "pending"), ("list", info["list"]), ("made", info.get("made_iso", "")),
@@ -671,7 +673,8 @@ def list_xlsx(entries: list[dict]) -> bytes:
 # ---------- workbooks: reading back ----------
 
 HEADERS = {"your decision": "decision", "capital": "capital", "correct spelling": "spelling", "result": "result",
-           "notes": "notes", "ref": "ref", "word (as in the document)": "word", "plain word": "plain",
+           "notes": "notes", "notes for self": "notes", "ref": "ref", "word (as in the document)": "word",
+           "plain word": "plain",
            # 'Also typed as', also as a column someone adds by hand to a report made before it existed
            "also typed as": "also", "also typed": "also", "also add": "also", "other spellings": "also",
            "other spelling": "also", "variants": "also", "variant": "also", "other ways of typing": "also"}
