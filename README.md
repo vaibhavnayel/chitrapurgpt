@@ -233,13 +233,13 @@ Diacritical's word list as an **Excel round trip**, on one page:
 2. **The report** (`diacritical/sheets.py`): a *Start here* sheet (what to do, counts), then the sheets that need a
    decision — *Different from our list*, *New words*, *Written without marks* — and read-only *Style only*,
    *Doubtful*, *Already in our list*. Yellow columns: *Your decision* (drop-down; blank = Pending), *Capital*
-   (drop-down), *Correct spelling*, *Also typed as*; *Notes* go with the word to the pending list. **One row per
+   (drop-down), *Result* (what will show; was *Correct spelling*), *Also typed as*; *Notes for self* go with the word to the pending list. **One row per
    plain word**: its *Word* cell lists every spelling the document uses (`Tṛtīyā, Tṛtīya (same as our list)`), with
    the total count, all pages and an example line per spelling; *Already in our list* only has words whose every
-   spelling matches. *Correct spelling* may hold several spellings, separated by commas (or semicolons; a comma
+   spelling matches. *Result* may hold several spellings, separated by commas (or semicolons; a comma
    inside a label's brackets stays), which become choices (`{{tṛtīya (masculine), tṛtīyā (feminine)}}`; with
    Always capital `{{}}{{…}}`), or a code typed as stored; filled in with no decision it counts as *Document is
-   right* / *Add*. *Document is right* on a word the document spells two differing ways needs *Correct spelling*
+   right* / *Add*. *Document is right* on a word the document spells two differing ways needs *Result*
    (otherwise it is listed and goes to Pending). A hidden *Ref* column (the item id) and a hidden `_dashboard`
    sheet (report of upload N, trial or live) let rows be sorted or deleted. Uploads made before one row per word
    (a row per spelling, Refs `c3:0`, `c3:1`) are regrouped when read (`harvest.regroup`, nothing migrated): their

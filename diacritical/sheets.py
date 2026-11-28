@@ -16,7 +16,7 @@ to a report made before it existed.
 
 One row per plain word on 'Different from our list' and 'New words' (harvest.group_words; a review stored before is
 regrouped on reading, and its old per-spelling Refs 'c3:0' are still read: item_cells, answers_from_report).
-'Correct spelling' (and the pending list's 'Result'): one spelling, several separated by commas (choices, labels in
+'Result' (was 'Correct spelling') (and the pending list's 'Result'): one spelling, several separated by commas (choices, labels in
 brackets allowed), or a code as stored (spellings, word_code). Filled in with an empty decision it counts as
 "Document is right" / "Add".
 """
@@ -88,9 +88,10 @@ NOTES_HELP = "“Notes for self”: your own remarks. They stay with the word (a
 NEW_SHEET = "New words"
 OWN_HELP = ("To add a word that isn't in the report, type it on a new row at the bottom of “New words” (the word with "
             "its marks) and choose Add.")
-CORRECT_HELP = ("“Correct spelling”: the spelling you want. Several spellings, separated by commas, become choices: "
-                "Tṛtīya (masculine), Tṛtīyā (feminine). Filling it in is enough: an empty decision then counts as "
-                "“Document is right” (or “Add” for a new word).")
+RESULT = "Result"   # was "Correct spelling" (a column headed that, in older files, is still read)
+CORRECT_HELP = ("“Result”: what the translator will show for this word (empty: the document's spelling). Several "
+                "spellings, separated by commas, become choices: Tṛtīya (masculine), Tṛtīyā (feminine). Filling it in "
+                "is enough: an empty decision then counts as “Document is right” (or “Add” for a new word).")
 ALSO_HELP = ("“Also typed as” (optional): other ways people type the word, separated by commas, e.g. krishna, krushna. "
              "Each gets the same result as the word.")
 PLAIN_OK = re.compile(r"[a-z0-9' \-]+")      # what a plain word of the list may hold (as harvest.clean_list_rows)
@@ -167,7 +168,7 @@ def capital_in_words(text) -> str | None:
 
 
 def spellings(text) -> tuple[list[str], str | None, str | None]:
-    """A 'Correct spelling' cell (or the pending list's 'Result'): (the spellings, each in the house style; a code
+    """A report 'Result' cell (or the pending list's 'Result'): (the spellings, each in the house style; a code
     typed as it is stored, '{{...}}', or None; why it can't be used, or None). Several spellings are separated by
     commas or semicolons (a comma inside a label's brackets stays: 'āratī (hindi, marathi)'); they become choices."""
     raw = str(text or "").strip()
@@ -354,7 +355,7 @@ def refs(item: dict) -> list[str]:
     return [item["id"]]
 
 
-CELL_FIELDS = (("decision", "Your decision"), ("capital", "Capital"), ("spelling", "Correct spelling"),
+CELL_FIELDS = (("decision", "Your decision"), ("capital", "Capital"), ("spelling", RESULT),
                ("also", ALSO), ("notes", "Notes"))
 
 
@@ -362,7 +363,7 @@ def item_cells(item: dict, cells: dict) -> dict | None:
     """What an uploaded copy said for an item, as one row ({decision, capital, spelling, also, notes}), or None.
     A report made before one row per word had a row per spelling: those rows are merged (the first value of each
     column is kept, a different one goes into Notes; 'Document is right' / 'Add' on one spelling's row writes that
-    spelling in 'Correct spelling'; notes and 'Also typed as' are put together)."""
+    spelling in 'Result'; notes and 'Also typed as' are put together)."""
     if item["id"] in cells:
         return cells[item["id"]]
     found = sorted((k, ref) for ref, k in harvest.old_refs(item).items() if ref in cells)
@@ -509,14 +510,14 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
             _table_sheet(wb, "Different from our list",
                          "In our list, but the document spells it differently. One row per word, with every spelling "
                          "the document uses (“same as our list”: that spelling already matches). “Your decision”: "
-                         "blank = Pending. “Correct spelling”: the spelling you want; several, separated by commas, "
-                         "become choices; filling it in is enough (it counts as “Document is right”). “Capital” "
+                         "blank = Pending. “Result”: what it will show (empty: the document's spelling); several, separated by "
+                         "commas, become choices; filling it in is enough (it counts as “Document is right”). “Capital” "
                          "blank = keep as it is. " + pend_note,
                          [("Word (as in the document)", 26), ("Plain word", 16), ("Times", 7), ("Pages", 10),
                           ("Example line", 48), ("Our list gives", 24), ("Your decision", 20), ("Capital", 15),
-                          ("Correct spelling", 22), (ALSO, 24), (NOTES, 30), ("Ref", 8)], rows,
+                          (RESULT, 22), (ALSO, 24), (NOTES, 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["clash"]],
-                                 "Capital": [lab for _, lab in CAPITALS], "Correct spelling": None, ALSO: None})
+                                 "Capital": [lab for _, lab in CAPITALS], RESULT: None, ALSO: None})
         if s.get("new"):
             rows = []
             for item in s["new"]:
@@ -530,14 +531,14 @@ def report_xlsx(review: dict, info: dict, cells: dict | None = None, extra: list
                              x.get("spelling"), x.get("also"), x.get("notes"), None])
             _table_sheet(wb, "New words",
                          "Words with marks that are not in our list, one row per word. “Your decision”: blank = "
-                         "Pending. “Correct spelling”: the spelling you want; several, separated by commas, become "
-                         "choices; filling it in is enough (it counts as “Add”). “Capital”: blank = Normal (Always "
+                         "Pending. “Result”: what it will show (empty: the word as in the document); several, separated by "
+                         "commas, become choices; filling it in is enough (it counts as “Add”). “Capital”: blank = Normal (Always "
                          "capital is filled in for words only seen with a capital, also mid-sentence). " + pend_note,
                          [("Word (as in the document)", 24), ("Plain word", 16), ("Times", 7), ("Pages", 10),
-                          ("Example line", 52), ("Your decision", 16), ("Capital", 15), ("Correct spelling", 22),
+                          ("Example line", 52), ("Your decision", 16), ("Capital", 15), (RESULT, 22),
                           (ALSO, 24), (NOTES, 30), ("Ref", 8)], rows,
                          decide={"Your decision": [lab for _, lab in CHOICES["new"]],
-                                 "Capital": [lab for _, lab in CAPITALS], "Correct spelling": None, ALSO: None})
+                                 "Capital": [lab for _, lab in CAPITALS], RESULT: None, ALSO: None})
         if s.get("unmarked"):
             rows = [[i["form"], i["plain"], i["times"], i["where"], i["line"], _gives(i),
                      c(i["id"], "decision", label("unmarked", "none")), c(i["id"], "notes"), i["id"]]
@@ -752,6 +753,8 @@ def read_filled(name: str, data: bytes) -> dict:
             key = _head(v)
             if key and key not in cols:
                 cols[key] = i
+        if meta["kind"] == "report" and "result" in cols and "spelling" not in cols:
+            cols["spelling"] = cols["result"]      # the report's "Result" column (it was "Correct spelling")
         for n, r in enumerate(rows[head + 1:], head + 2):
             def get(k):
                 i = cols.get(k)
@@ -795,7 +798,7 @@ def _items(review: dict):
 
 def answers_from_report(review: dict, filled: dict) -> dict:
     """Each item's decision from a filled report: {'rows': {item id: {choice, option (which of the document's
-    spellings, for a decision without a correct spelling), cap, spellings (typed in 'Correct spelling'), code (a code
+    spellings, for a decision without a correct spelling), cap, spellings (typed in 'Result'), code (a code
     typed there), spelling (the first of them), note, also (other ways of typing it), also_bad (parts of 'Also typed
     as' that can't be a plain word)}}, 'unclear': [...], 'words': [...] (read from someone's own words, or a correct
     spelling with no decision), 'missing': [words whose rows weren't in the file], 'cells': the cells (to show again
@@ -843,12 +846,12 @@ def answers_from_report(review: dict, filled: dict) -> dict:
             typed = bool(spelled or code)
             if typed and key in ("list", "skip", "none"):
                 problems.append(where | {"typed": f"{cell.get('decision')} + {cell.get('spelling')}",
-                                         "why": f"a correct spelling was given, but the decision is "
+                                         "why": f"a Result was given, but the decision is "
                                                 f"“{label(kind, key)}”"})
                 continue
             if key is None and typed and kind in ("clash", "new"):
                 key = "doc" if kind == "clash" else "add"   # a correct spelling is enough: Document is right / Add
-                out["words"].append(where | {"typed": f"Correct spelling: {cell.get('spelling')} (no decision)",
+                out["words"].append(where | {"typed": f"Result: {cell.get('spelling')} (no decision)",
                                              "read": label(kind, key) + (
                                                  f" · {CAP_LABEL[cap]}" if cap in CAP_LABEL else "")})
             elif how == "words":
@@ -859,7 +862,7 @@ def answers_from_report(review: dict, filled: dict) -> dict:
             if k is None and key in ("doc", "add") and not typed and len(options) > 1:
                 problems.append(where | {"typed": cell.get("decision"),
                                          "why": "the document spells it more than one way: type the spelling(s) you "
-                                                "want in “Correct spelling”"})
+                                                "want in “Result”"})
                 continue
             per_row.append({"option": k or 0, "choice": key, "cap": cap, "spellings": spelled, "code": code,
                             "where": where})
@@ -908,7 +911,7 @@ def answers_from_report(review: dict, filled: dict) -> dict:
 def _own_row(x: dict, out: dict) -> dict:
     """A row typed in by hand on 'New words': {id, word, plain, choice ('add'|'pending'|'skip'), code, note, also,
     also_bad, where} or, when it can't be used, {.., why}. Decisions read from someone's own words go to
-    out['words']. A filled 'Correct spelling' with no decision is Add; several spellings there (or in 'Word') become
+    out['words']. A filled 'Result' with no decision is Add; several spellings there (or in 'Word') become
     choices; the plain word is made from the first."""
     where = {"sheet": x["sheet"], "row": x["row"]}
     text = x.get("spelling") or x.get("word") or ""

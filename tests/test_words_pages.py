@@ -267,15 +267,15 @@ def test_one_row_per_word_and_several_spellings_through_the_pages(client, db):  
     assert rows["deva"]["Word (as in the document)"] == "Dĕva, Dĕvā" and rows["deva"]["Times"] == 2
     assert "Tṛtīya" not in {r["Word (as in the document)"] for r in rows_of(wb["Already in our list"])}
     diff = "Different from our list"
-    data = fill(report, {(diff, "deva"): {"Correct spelling": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
+    data = fill(report, {(diff, "deva"): {"Result": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
                                           "Capital": "Always capital"},
-                         (diff, "trtiya"): {"Correct spelling": "Tṛtīya (masculine), Tṛtīyā (feminine)"}})
+                         (diff, "trtiya"): {"Result": "Tṛtīya (masculine), Tṛtīyā (feminine)"}})
     r = send_decisions(client, data)
     page = client.get(r.headers["location"]).text
     assert "This will change 2 and put 2 on the pending list." in page        # krshna and konkani: blank
     assert "choice: Dĕvā or Dĕva (koṅkaṇī) or Deva (sanskrit) (always capital)" in page
     assert "choice: tṛtīya (masculine) or tṛtīyā (feminine)" in page
-    assert "Correct spelling: Tṛtīya (masculine), Tṛtīyā (feminine) (no decision)" in page   # how it was read
+    assert "Result: Tṛtīya (masculine), Tṛtīyā (feminine) (no decision)" in page   # how it was read
     r = client.post(r.headers["location"], data={"csrf": csrf(), "action": "apply", "fingerprint": fingerprint(page)})
     assert flash(r).startswith("Applied: changed 2"), flash(r)
     listed = {row[0]: row[1] for row in workbook(client.get("/admin/words/list.xlsx").content).active.iter_rows(
@@ -292,9 +292,9 @@ def test_a_review_made_before_one_row_per_word_through_the_pages(client):
     assert "7 different from our list · 5 new · 2 without marks · 3 already in our list" in home   # regrouped
     wb = workbook(client.get(f"/admin/words/report/{rid}.xlsx").content)
     rows = {r["Plain word"]: r for r in rows_of(wb["Different from our list"])}
-    assert (rows["bankikodla"]["Word (as in the document)"], rows["bankikodla"]["Correct spelling"],
+    assert (rows["bankikodla"]["Word (as in the document)"], rows["bankikodla"]["Result"],
             rows["bankikodla"]["Capital"]) == ("Baṅkīkoḍla, Baṅkīkoḍlā", "Baṅkīkoḍlā", "Always capital")
     assert rows["arati"]["Word (as in the document)"] == "ārati, āratī (same as our list)"
     page = client.get(f"/admin/words/confirm/{rid}").text
     assert "Baṅkīkoḍlā (always capital)" in page and "Baṅkikoḍlā (always capital)" in page    # before -> after
-    assert "Correct spelling: Baṅkīkoḍlā (no decision)" in page
+    assert "Result: Baṅkīkoḍlā (no decision)" in page

@@ -417,12 +417,12 @@ def test_a_review_made_before_one_row_per_word(db):
     # downloaded again: one row per word, with what he uploaded filled in
     data = report_of(rid)
     rows = {x["Plain word"]: x for x in rows_of(workbook(data)["Different from our list"])}
-    assert rows["bankikodla"]["Correct spelling"] == "Baṅkīkoḍlā" and rows["bankikodla"]["Capital"] == "Always capital"
+    assert rows["bankikodla"]["Result"] == "Baṅkīkoḍlā" and rows["bankikodla"]["Capital"] == "Always capital"
     assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīya".join(["Tṛtīyā, ", " (same as our list)"])
     # he fills in the choices he wrote in Notes, decisions left empty, and uploads it
-    p = upload(rid, {(DIFF, "deva"): {"Correct spelling": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
+    p = upload(rid, {(DIFF, "deva"): {"Result": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
                                       "Capital": "Always capital"},
-                     (DIFF, "trtiya"): {"Correct spelling": "Tṛtīya (masculine), Tṛtīyā (feminine)"}}, data=data)
+                     (DIFF, "trtiya"): {"Result": "Tṛtīya (masculine), Tṛtīyā (feminine)"}}, data=data)
     assert {c["plain"]: c["result"] for c in p["update"]} == {
         "bankikodla": "{{}}{{baṅkīkoḍlā}}", "santacruz": "{{}}{{sāntācrūz}}",
         "deva": "{{}}{{dĕvā, dĕva (koṅkaṇī), deva (sanskrit)}}", "trtiya": "{{tṛtīya (masculine), tṛtīyā (feminine)}}"}
