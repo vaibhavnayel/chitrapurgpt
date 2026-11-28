@@ -1,0 +1,875 @@
+{
+ "note": "Review 1 of the live trial list (27 Nov 2026, a Word file), trimmed: its stored items (made before one row per plain word: a row per spelling, Refs 'c3:0', 'c3:1') and the decisions uploaded for it (not applied).",
+ "items": {
+  "kind": "document",
+  "counts": {
+   "new": 5,
+   "clash": 7,
+   "style": 0,
+   "already": 6,
+   "doubtful": 0,
+   "unmarked": 2
+  },
+  "sections": {
+   "new": [
+    {
+     "id": "n1",
+     "form": "Abhoktā",
+     "kind": "new",
+     "line": "Abhoktā",
+     "rows": [
+      {
+       "form": "Abhoktā",
+       "line": "Abhoktā",
+       "times": 1,
+       "where": "",
+       "result": "abhoktā"
+      }
+     ],
+     "seen": "start",
+     "greek": false,
+     "plain": "abhokta",
+     "times": 1,
+     "where": "",
+     "options": [
+      "abhoktā"
+     ],
+     "spellings": [
+      "Abhoktā"
+     ]
+    },
+    {
+     "id": "n8",
+     "form": "Ambābāī",
+     "kind": "new",
+     "line": "Ambābāī",
+     "rows": [
+      {
+       "form": "Ambābāī",
+       "line": "Ambābāī",
+       "times": 1,
+       "where": "",
+       "result": "ambābāī"
+      }
+     ],
+     "seen": "start",
+     "greek": false,
+     "plain": "ambabai",
+     "times": 1,
+     "where": "",
+     "options": [
+      "ambābāī"
+     ],
+     "spellings": [
+      "Ambābāī"
+     ]
+    },
+    {
+     "id": "n12",
+     "form": "Āshīrvachana-s",
+     "kind": "new",
+     "line": "Āshīrvachana-s",
+     "rows": [
+      {
+       "form": "Āshīrvachana-s",
+       "line": "Āshīrvachana-s",
+       "times": 1,
+       "where": "",
+       "result": "āshīrvachana-s"
+      }
+     ],
+     "seen": "start",
+     "greek": false,
+     "plain": "ashirvachana-s",
+     "times": 1,
+     "where": "",
+     "options": [
+      "āshīrvachana-s"
+     ],
+     "spellings": [
+      "Āshīrvachana-s"
+     ]
+    },
+    {
+     "id": "n41",
+     "form": "Īshwara",
+     "kind": "new",
+     "line": "Īshwara",
+     "rows": [
+      {
+       "form": "Īshwara",
+       "line": "Īshwara",
+       "times": 1,
+       "where": "",
+       "result": "īshwara"
+      }
+     ],
+     "seen": "start",
+     "greek": false,
+     "plain": "ishwara",
+     "times": 1,
+     "where": "",
+     "options": [
+      "īshwara"
+     ],
+     "spellings": [
+      "Īshwara"
+     ]
+    },
+    {
+     "id": "n109",
+     "form": "thālī-s",
+     "kind": "new",
+     "line": "thālī-s",
+     "rows": [
+      {
+       "form": "thālī-s",
+       "line": "thālī-s",
+       "times": 1,
+       "where": "",
+       "result": "thālī-s"
+      }
+     ],
+     "seen": "small",
+     "greek": false,
+     "plain": "thali-s",
+     "times": 1,
+     "where": "",
+     "options": [
+      "thālī-s"
+     ],
+     "spellings": [
+      "thālī-s"
+     ]
+    }
+   ],
+   "clash": [
+    {
+     "id": "c1",
+     "form": "ārati",
+     "kind": "clash",
+     "line": "ārati (Sanskrit)",
+     "note": "",
+     "rows": [
+      {
+       "form": "ārati",
+       "line": "ārati (Sanskrit)",
+       "times": 1,
+       "where": "",
+       "result": "ārati"
+      }
+     ],
+     "entry": "āratī",
+     "forms": [
+      {
+       "form": "ārati",
+       "gives": "āratī",
+       "times": 1,
+       "status": "differs"
+      },
+      {
+       "form": "āratī",
+       "gives": "āratī",
+       "times": 2,
+       "status": "same as our list"
+      }
+     ],
+     "gives": "āratī",
+     "plain": "arati",
+     "times": 1,
+     "where": "",
+     "options": [
+      "ārati"
+     ],
+     "capitalised": false
+    },
+    {
+     "id": "c2",
+     "form": "ārati-s",
+     "kind": "clash",
+     "line": "ārati-s (Sanskrit)",
+     "note": "",
+     "rows": [
+      {
+       "form": "ārati-s",
+       "line": "ārati-s (Sanskrit)",
+       "times": 1,
+       "where": "",
+       "result": "ārati-s"
+      }
+     ],
+     "entry": null,
+     "forms": [
+      {
+       "form": "ārati-s",
+       "gives": "āratī-s",
+       "times": 1,
+       "status": "differs"
+      },
+      {
+       "form": "āratī-s",
+       "gives": "āratī-s",
+       "times": 2,
+       "status": "same as our list"
+      }
+     ],
+     "gives": "āratī-s",
+     "plain": "arati-s",
+     "times": 1,
+     "where": "",
+     "options": [
+      "ārati-s"
+     ],
+     "capitalised": false
+    },
+    {
+     "id": "c3",
+     "form": "Baṅkīkoḍla",
+     "kind": "clash",
+     "line": "Baṅkīkoḍla",
+     "note": "",
+     "rows": [
+      {
+       "form": "Baṅkīkoḍla",
+       "line": "Baṅkīkoḍla",
+       "times": 1,
+       "where": "",
+       "result": "baṅkīkoḍla"
+      },
+      {
+       "form": "Baṅkīkoḍlā",
+       "line": "Baṅkīkoḍlā",
+       "times": 1,
+       "where": "",
+       "result": "baṅkīkoḍlā"
+      }
+     ],
+     "entry": "{{}}{{baṅkikoḍlā}}",
+     "forms": [
+      {
+       "form": "Baṅkīkoḍla",
+       "gives": "Baṅkikoḍlā",
+       "times": 1,
+       "status": "differs"
+      },
+      {
+       "form": "Baṅkīkoḍlā",
+       "gives": "Baṅkikoḍlā",
+       "times": 1,
+       "status": "differs"
+      }
+     ],
+     "gives": "Baṅkikoḍlā",
+     "plain": "bankikodla",
+     "times": 2,
+     "where": "",
+     "options": [
+      "baṅkīkoḍla",
+      "baṅkīkoḍlā"
+     ],
+     "capitalised": true
+    },
+    {
+     "id": "c4",
+     "form": "Dĕva",
+     "kind": "clash",
+     "line": "Dĕvā, Dĕva (Koṅkaṇī)",
+     "note": "",
+     "rows": [
+      {
+       "form": "Dĕva",
+       "line": "Dĕvā, Dĕva (Koṅkaṇī)",
+       "times": 1,
+       "where": "",
+       "result": "dĕva"
+      },
+      {
+       "form": "Dĕvā",
+       "line": "Dĕvā, Dĕva (Koṅkaṇī)",
+       "times": 1,
+       "where": "",
+       "result": "dĕvā"
+      }
+     ],
+     "entry": "deva",
+     "forms": [
+      {
+       "form": "Dĕva",
+       "gives": "Deva",
+       "times": 1,
+       "status": "differs"
+      },
+      {
+       "form": "Dĕvā",
+       "gives": "Deva",
+       "times": 1,
+       "status": "differs"
+      }
+     ],
+     "gives": "Deva",
+     "plain": "deva",
+     "times": 2,
+     "where": "",
+     "options": [
+      "dĕva",
+      "dĕvā"
+     ],
+     "capitalised": true
+    },
+    {
+     "id": "c5",
+     "form": "Sāntācrūz",
+     "kind": "clash",
+     "line": "Sāntācrūz",
+     "note": "",
+     "rows": [
+      {
+       "form": "Sāntācrūz",
+       "line": "Sāntācrūz",
+       "times": 1,
+       "where": "",
+       "result": "sāntācrūz"
+      }
+     ],
+     "entry": "sāntācruz",
+     "forms": [
+      {
+       "form": "Sāntācrūz",
+       "gives": "Sāntācruz",
+       "times": 1,
+       "status": "differs"
+      }
+     ],
+     "gives": "Sāntācruz",
+     "plain": "santacruz",
+     "times": 1,
+     "where": "",
+     "options": [
+      "sāntācrūz"
+     ],
+     "capitalised": true
+    },
+    {
+     "id": "c6",
+     "form": "Tṛtīyā",
+     "kind": "clash",
+     "line": "Tṛtīyā (feminine)",
+     "note": "",
+     "rows": [
+      {
+       "form": "Tṛtīyā",
+       "line": "Tṛtīyā (feminine)",
+       "times": 1,
+       "where": "",
+       "result": "tṛtīyā"
+      }
+     ],
+     "entry": "tṛtīya",
+     "forms": [
+      {
+       "form": "Tṛtīyā",
+       "gives": "Tṛtīya",
+       "times": 1,
+       "status": "differs"
+      },
+      {
+       "form": "Tṛtīya",
+       "gives": "Tṛtīya",
+       "times": 1,
+       "status": "same as our list"
+      }
+     ],
+     "gives": "Tṛtīya",
+     "plain": "trtiya",
+     "times": 1,
+     "where": "",
+     "options": [
+      "tṛtīyā"
+     ],
+     "capitalised": true
+    },
+    {
+     "id": "c7",
+     "form": "Yāma",
+     "kind": "clash",
+     "line": "Yāma",
+     "note": "",
+     "rows": [
+      {
+       "form": "Yāma",
+       "line": "Yāma",
+       "times": 1,
+       "where": "",
+       "result": "yāma"
+      }
+     ],
+     "entry": "{{yāma}}{{yama}}",
+     "forms": [
+      {
+       "form": "Yāma",
+       "gives": "Yama",
+       "times": 1,
+       "status": "differs"
+      }
+     ],
+     "gives": "Yama",
+     "plain": "yama",
+     "times": 1,
+     "where": "",
+     "options": [
+      "yāma"
+     ],
+     "capitalised": true
+    }
+   ],
+   "style": [],
+   "already": [
+    {
+     "id": "a1",
+     "form": "Ahaṅkāra",
+     "line": "Ahaṅkāra",
+     "gives": "Ahaṅkāra",
+     "plain": "ahankara",
+     "times": 1,
+     "where": ""
+    },
+    {
+     "id": "a2",
+     "form": "āratī",
+     "line": "āratī (Hindi, Marathi)",
+     "gives": "āratī",
+     "plain": "arati",
+     "times": 2,
+     "where": ""
+    },
+    {
+     "id": "a3",
+     "form": "āratī-s",
+     "line": "āratī-s (Marathi)",
+     "gives": "āratī-s",
+     "plain": "arati-s",
+     "times": 2,
+     "where": ""
+    },
+    {
+     "id": "a12",
+     "form": "Koṅkaṇī",
+     "line": "Dĕvā, Dĕva (Koṅkaṇī)",
+     "gives": "Koṅkaṇī",
+     "plain": "konkani",
+     "times": 1,
+     "where": ""
+    },
+    {
+     "id": "a17",
+     "form": "Nāmāvalī",
+     "line": "Nāmāvalī (Hindi), Nāmāvaliḥ (Sanskrit)",
+     "gives": "{{Nāmāvalī (Hindi),Nāmāvaliḥ (Sanskrit)}}",
+     "plain": "namavali",
+     "times": 2,
+     "where": ""
+    },
+    {
+     "id": "a19",
+     "form": "Tṛtīya",
+     "line": "Tṛtīya (masculine)",
+     "gives": "Tṛtīya",
+     "plain": "trtiya",
+     "times": 1,
+     "where": ""
+    }
+   ],
+   "doubtful": [],
+   "unmarked": [
+    {
+     "id": "u1",
+     "form": "Hindi",
+     "kind": "unmarked",
+     "line": "āratī (Hindi, Marathi)",
+     "mark": "Hindi",
+     "entry": "{{}}{{hindī}}",
+     "forms": [
+      "Hindi"
+     ],
+     "gives": "Hindī",
+     "plain": "hindi",
+     "times": 3,
+     "where": ""
+    },
+    {
+     "id": "u2",
+     "form": "Marathi",
+     "kind": "unmarked",
+     "line": "āratī (Hindi, Marathi)",
+     "mark": "Marathi",
+     "entry": "{{}}{{marāt͟hī}}",
+     "forms": [
+      "Marathi"
+     ],
+     "gives": "Marāt͟hī",
+     "plain": "marathi",
+     "times": 2,
+     "where": ""
+    }
+   ]
+  },
+  "words_with_marks": 149
+ },
+ "decisions": {
+  "by": "admin@example.com",
+  "file": "Decisions word-check-1-20261127-New-Diacritical-words.xlsx",
+  "kind": "report",
+  "rows": {
+   "c1": {
+    "cap": "normal",
+    "also": [],
+    "note": "When entered with a capital, the result should always be Āratī; When spelt in Sanskrit it is ārati, but āratī in Marathi and Hindi. I notice the multiple spelling are not noted here. Going forward, when the plain text is exactly the same across rows, can they be clubbed into a single row?",
+    "choice": "pending",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "c2": {
+    "cap": null,
+    "also": [],
+    "note": "ārati-s in Sanskrit, āratī-s in Marathi and Hindi",
+    "choice": "pending",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "c3": {
+    "cap": "capital",
+    "also": [],
+    "note": "",
+    "choice": "pending",
+    "option": 0,
+    "also_bad": [],
+    "spelling": "baṅkīkoḍlā"
+   },
+   "c4": {
+    "cap": "capital",
+    "also": [],
+    "note": "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)",
+    "choice": "pending",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "c5": {
+    "cap": "capital",
+    "also": [],
+    "note": "",
+    "choice": "doc",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "c6": {
+    "cap": null,
+    "also": [],
+    "note": "It's spelt according to Gender. Tṛtīyā (feminine) and Tṛtīya (masculine). I notice the Masculine has not been noted in this sheet",
+    "choice": "pending",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "c7": {
+    "cap": null,
+    "also": [],
+    "note": "",
+    "choice": "list",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "n1": {
+    "cap": null,
+    "also": [],
+    "note": "",
+    "choice": "add",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "n8": {
+    "cap": "capital",
+    "also": [],
+    "note": "",
+    "choice": "add",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "u1": {
+    "cap": null,
+    "also": [],
+    "note": "",
+    "choice": "none",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "u2": {
+    "cap": null,
+    "also": [],
+    "note": "",
+    "choice": "none",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "n12": {
+    "cap": null,
+    "also": [
+     "ashirvachans",
+     "ashirvachan-s"
+    ],
+    "note": "",
+    "choice": "add",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "n41": {
+    "cap": "capital",
+    "also": [
+     "iswara",
+     "ishwar"
+    ],
+    "note": "",
+    "choice": "add",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   },
+   "n109": {
+    "cap": null,
+    "also": [],
+    "note": "",
+    "choice": "add",
+    "option": 0,
+    "also_bad": [],
+    "spelling": ""
+   }
+  },
+  "cells": {
+   "u1": {
+    "row": 3,
+    "also": null,
+    "word": "Hindi",
+    "notes": "",
+    "sheet": "Written without marks",
+    "result": "",
+    "capital": "",
+    "decision": "Nothing to change",
+    "spelling": ""
+   },
+   "u2": {
+    "row": 4,
+    "also": null,
+    "word": "Marathi",
+    "notes": "",
+    "sheet": "Written without marks",
+    "result": "",
+    "capital": "",
+    "decision": "Nothing to change",
+    "spelling": ""
+   },
+   "c1:0": {
+    "row": 3,
+    "also": null,
+    "word": "ārati",
+    "notes": "When entered with a capital, the result should always be Āratī; When spelt in Sanskrit it is ārati, but āratī in Marathi and Hindi. I notice the multiple spelling are not noted here. Going forward, when the plain text is exactly the same across rows, can they be clubbed into a single row?",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "",
+    "decision": "",
+    "spelling": ""
+   },
+   "c2:0": {
+    "row": 4,
+    "also": null,
+    "word": "ārati-s",
+    "notes": "ārati-s in Sanskrit, āratī-s in Marathi and Hindi",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "",
+    "decision": "",
+    "spelling": ""
+   },
+   "c3:0": {
+    "row": 5,
+    "also": null,
+    "word": "Baṅkīkoḍla",
+    "notes": "",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "",
+    "spelling": "Baṅkīkoḍlā"
+   },
+   "c3:1": {
+    "row": 6,
+    "also": null,
+    "word": "Baṅkīkoḍlā",
+    "notes": "",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "",
+    "spelling": "Baṅkīkoḍlā"
+   },
+   "c4:0": {
+    "row": 7,
+    "also": null,
+    "word": "Dĕva",
+    "notes": "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "",
+    "spelling": ""
+   },
+   "c4:1": {
+    "row": 8,
+    "also": null,
+    "word": "Dĕvā",
+    "notes": "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "",
+    "spelling": ""
+   },
+   "c5:0": {
+    "row": 9,
+    "also": null,
+    "word": "Sāntācrūz",
+    "notes": "",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "Document is right",
+    "spelling": ""
+   },
+   "c6:0": {
+    "row": 10,
+    "also": null,
+    "word": "Tṛtīyā",
+    "notes": "It's spelt according to Gender. Tṛtīyā (feminine) and Tṛtīya (masculine). I notice the Masculine has not been noted in this sheet",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "",
+    "decision": "",
+    "spelling": ""
+   },
+   "c7:0": {
+    "row": 11,
+    "also": null,
+    "word": "Yāma",
+    "notes": "",
+    "sheet": "Different from our list",
+    "result": "",
+    "capital": "",
+    "decision": "Our list is right",
+    "spelling": ""
+   },
+   "n1:0": {
+    "row": 3,
+    "also": "",
+    "word": "Abhoktā",
+    "notes": "",
+    "sheet": "New words",
+    "result": "",
+    "capital": "",
+    "decision": "Add",
+    "spelling": ""
+   },
+   "n8:0": {
+    "row": 10,
+    "also": "",
+    "word": "Ambābāī",
+    "notes": "",
+    "sheet": "New words",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "Add",
+    "spelling": ""
+   },
+   "n12:0": {
+    "row": 14,
+    "also": "ashirvachans, ashirvachan-s",
+    "word": "Āshīrvachana-s",
+    "notes": "",
+    "sheet": "New words",
+    "result": "",
+    "capital": "",
+    "decision": "Add",
+    "spelling": ""
+   },
+   "n41:0": {
+    "row": 43,
+    "also": "Iswara, Ishwar,",
+    "word": "Īshwara",
+    "notes": "",
+    "sheet": "New words",
+    "result": "",
+    "capital": "Always capital",
+    "decision": "Add",
+    "spelling": ""
+   },
+   "n109:0": {
+    "row": 111,
+    "also": "",
+    "word": "thālī-s",
+    "notes": "",
+    "sheet": "New words",
+    "result": "",
+    "capital": "",
+    "decision": "Add",
+    "spelling": ""
+   }
+  },
+  "extra": [
+   {
+    "id": "own123",
+    "also": [],
+    "code": "thālī",
+    "note": "",
+    "word": "thālī",
+    "plain": "thali",
+    "where": {
+     "row": 123,
+     "sheet": "New words"
+    },
+    "choice": "add",
+    "also_bad": []
+   }
+  ],
+  "extra_cells": [
+   {
+    "row": 123,
+    "also": "",
+    "word": "thālī",
+    "notes": "",
+    "plain": "",
+    "sheet": "New words",
+    "capital": "",
+    "decision": "Add",
+    "spelling": ""
+   }
+  ],
+  "words": [],
+  "missing": [],
+  "unclear": []
+ },
+ "entries": {
+  "arati": "āratī",
+  "bankikodla": "{{}}{{baṅkikoḍlā}}",
+  "deva": "deva",
+  "santacruz": "sāntācruz",
+  "trtiya": "tṛtīya",
+  "yama": "{{yāma}}{{yama}}"
+ }
+}

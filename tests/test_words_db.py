@@ -373,3 +373,72 @@ def test_also_typed_as_and_own_rows_apply_carry_over_and_undo(db):
     assert pending["ganesha"]["also"] == "ganesa, ganesh"                   # back on the list, with them
     run(lambda c, n: wordlist.undo(c, n, done["batch"], BY))
     assert words() == dict(LIVE)
+
+
+
+def stored_review1() -> tuple[int, dict]:
+    """Shantish's review 1 (trimmed fixture) stored as it was made before one row per word, with his uploaded
+    decisions waiting, on a trial list whose entries are what the review saw."""
+    from psycopg.types.json import Jsonb
+    from test_words_harvest import review1
+    fx = review1()
+    run(wordlist.entries)                                                      # the trial copy exists
+    for plain, code in fx["entries"].items():
+        set_word(wordlist.database_url(), "diacritic_mappings_trial", plain, code)
+
+    def go(conn, name):
+        rid = wordlist.create_review(conn, name, "document", "20261127 New Diacritical words.docx",
+                                     [{"name": "20261127 New Diacritical words.docx"}], BY, fx["items"])
+        conn.execute("UPDATE dia_review SET decisions = %s WHERE id = %s", (Jsonb(fx["decisions"]), rid))
+        return rid
+    return run(go), fx
+
+
+def report_of(rid) -> bytes:
+    """The report as the page makes it: with what was uploaded for it filled in."""
+    def go(conn, name):
+        rv = wordlist.get_review(conn, name, rid)
+        dec = rv["decisions"] or {}
+        return sheets.report_xlsx(rv["items"], {"review": rid, "list": rv["list_name"], "files": ["x.docx"],
+                                                "made_iso": rv["created_at"].isoformat(timespec="seconds")},
+                                  dec.get("cells"), dec.get("extra_cells"))
+    return run(go)
+
+
+def test_a_review_made_before_one_row_per_word(db):
+    from diacritical.diacritics import translate_text
+    from test_words_harvest import old_layout_file, rows_of, workbook
+    rid, fx = stored_review1()
+    # its uploaded decisions are read the new way: Correct spelling + Always capital, no decision = Document is right
+    p = run(lambda c, n: wordlist.plan_for(c, n, wordlist.get_review(c, n, rid)))
+    assert {c["plain"]: c["result"] for c in p["update"]} == {"bankikodla": "{{}}{{baṅkīkoḍlā}}",
+                                                              "santacruz": "{{}}{{sāntācrūz}}"}
+    assert run(lambda c, n: wordlist.get_review(c, n, rid))["items"]["sections"]["already"][1]["form"] == "āratī"
+    # downloaded again: one row per word, with what he uploaded filled in
+    data = report_of(rid)
+    rows = {x["Plain word"]: x for x in rows_of(workbook(data)["Different from our list"])}
+    assert rows["bankikodla"]["Correct spelling"] == "Baṅkīkoḍlā" and rows["bankikodla"]["Capital"] == "Always capital"
+    assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīya".join(["Tṛtīyā, ", " (same as our list)"])
+    # he fills in the choices he wrote in Notes, decisions left empty, and uploads it
+    p = upload(rid, {(DIFF, "deva"): {"Correct spelling": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
+                                      "Capital": "Always capital"},
+                     (DIFF, "trtiya"): {"Correct spelling": "Tṛtīya (masculine), Tṛtīyā (feminine)"}}, data=data)
+    assert {c["plain"]: c["result"] for c in p["update"]} == {
+        "bankikodla": "{{}}{{baṅkīkoḍlā}}", "santacruz": "{{}}{{sāntācrūz}}",
+        "deva": "{{}}{{dĕvā, dĕva (koṅkaṇī), deva (sanskrit)}}", "trtiya": "{{tṛtīya (masculine), tṛtīyā (feminine)}}"}
+    assert {x["plain"] for x in p["pending_new"]} == {"arati", "arati-s"}
+    apply(rid, p)
+    w = words()
+    assert w["deva"] == "{{}}{{dĕvā, dĕva (koṅkaṇī), deva (sanskrit)}}" and w["thali"] == "thālī"
+    assert translate_text("deva Deva trtiya Trtiya", w) == (
+        "{{Dĕvā,Dĕva (koṅkaṇī),Deva (sanskrit)}} {{Dĕvā,Dĕva (koṅkaṇī),Deva (sanskrit)}} "
+        "{{tṛtīya (masculine),tṛtīyā (feminine)}} {{Tṛtīya (masculine),Tṛtīyā (feminine)}}")
+
+    # a filled file in the old layout (a row per spelling) is still read
+    r2, fx = stored_review1()
+    rv = run(lambda c, n: wordlist.get_review(c, n, r2))
+    info = {"review": r2, "list": "trial", "made_iso": rv["created_at"].isoformat(timespec="seconds")}
+    old = old_layout_file(fx, {"c4:1": {"Your decision": "Document is right"},
+                               "c6:0": {"Your decision": "Our list is right"}}, info)
+    p = upload(r2, {}, data=old)
+    assert {c["plain"]: c["result"] for c in p["update"]} == {"deva": "dĕvā"}

@@ -251,3 +251,50 @@ def test_confirm_page_shows_other_ways_of_typing_and_own_rows(client):
     assert rows[-2]["Word (as in the document)"] == "āvaraṇa-s"
     history = client.get("/admin/words/history").text
     assert "3 added (1 of them another way of typing)" in history
+
+
+
+def test_one_row_per_word_and_several_spellings_through_the_pages(client, db):  # noqa: F811
+    from test_words_db import set_word
+    for plain, code in (("trtiya", "tṛtīya"), ("deva", "deva"), ("devi", "dĕvī")):
+        set_word(db, "diacritic_mappings", plain, code)                     # before the trial copy is made
+    rid = upload_doc(client, ["Tṛtīyā (feminine) and Tṛtīya (masculine).", "Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)",
+                              "Shrī Kṛshṇa came."])
+    report = client.get(f"/admin/words/report/{rid}.xlsx").content
+    wb = workbook(report)
+    rows = {r["Plain word"]: r for r in rows_of(wb["Different from our list"])}
+    assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīyā, Tṛtīya (same as our list)"
+    assert rows["deva"]["Word (as in the document)"] == "Dĕva, Dĕvā" and rows["deva"]["Times"] == 2
+    assert "Tṛtīya" not in {r["Word (as in the document)"] for r in rows_of(wb["Already in our list"])}
+    diff = "Different from our list"
+    data = fill(report, {(diff, "deva"): {"Correct spelling": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)",
+                                          "Capital": "Always capital"},
+                         (diff, "trtiya"): {"Correct spelling": "Tṛtīya (masculine), Tṛtīyā (feminine)"}})
+    r = send_decisions(client, data)
+    page = client.get(r.headers["location"]).text
+    assert "This will change 2 and put 2 on the pending list." in page        # krshna and konkani: blank
+    assert "choice: Dĕvā or Dĕva (koṅkaṇī) or Deva (sanskrit) (always capital)" in page
+    assert "choice: tṛtīya (masculine) or tṛtīyā (feminine)" in page
+    assert "Correct spelling: Tṛtīya (masculine), Tṛtīyā (feminine) (no decision)" in page   # how it was read
+    r = client.post(r.headers["location"], data={"csrf": csrf(), "action": "apply", "fingerprint": fingerprint(page)})
+    assert flash(r).startswith("Applied: changed 2"), flash(r)
+    listed = {row[0]: row[1] for row in workbook(client.get("/admin/words/list.xlsx").content).active.iter_rows(
+        min_row=2, values_only=True)}
+    assert listed["deva"] == "{{}}{{dĕvā, dĕva (koṅkaṇī), deva (sanskrit)}}"
+    assert listed["trtiya"] == "{{tṛtīya (masculine), tṛtīyā (feminine)}}"
+
+
+def test_a_review_made_before_one_row_per_word_through_the_pages(client):
+    from test_words_db import stored_review1
+    rid, _ = stored_review1()
+    home = client.get("/admin/words").text
+    assert "Your decisions are uploaded, not applied yet" in home
+    assert "7 different from our list · 5 new · 2 without marks · 3 already in our list" in home   # regrouped
+    wb = workbook(client.get(f"/admin/words/report/{rid}.xlsx").content)
+    rows = {r["Plain word"]: r for r in rows_of(wb["Different from our list"])}
+    assert (rows["bankikodla"]["Word (as in the document)"], rows["bankikodla"]["Correct spelling"],
+            rows["bankikodla"]["Capital"]) == ("Baṅkīkoḍla, Baṅkīkoḍlā", "Baṅkīkoḍlā", "Always capital")
+    assert rows["arati"]["Word (as in the document)"] == "ārati, āratī (same as our list)"
+    page = client.get(f"/admin/words/confirm/{rid}").text
+    assert "Baṅkīkoḍlā (always capital)" in page and "Baṅkikoḍlā (always capital)" in page    # before -> after
+    assert "Correct spelling: Baṅkīkoḍlā (no decision)" in page

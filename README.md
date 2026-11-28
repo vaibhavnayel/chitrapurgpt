@@ -232,10 +232,18 @@ Diacritical's word list as an **Excel round trip**, on one page:
    **Your uploads** with **Download the report**.
 2. **The report** (`diacritical/sheets.py`): a *Start here* sheet (what to do, counts), then the sheets that need a
    decision — *Different from our list*, *New words*, *Written without marks* — and read-only *Style only*,
-   *Doubtful*, *Already in our list*. Yellow drop-down columns: *Your decision* (blank = Pending), *Capital*, plus
-   *Correct spelling* and *Notes* (they go with the word to the pending list). A word the document spells two ways
-   has one row per spelling. A hidden *Ref* column and a hidden `_dashboard` sheet (report of upload N, trial or
-   live) let rows be sorted or deleted.
+   *Doubtful*, *Already in our list*. Yellow columns: *Your decision* (drop-down; blank = Pending), *Capital*
+   (drop-down), *Correct spelling*, *Also typed as*; *Notes* go with the word to the pending list. **One row per
+   plain word**: its *Word* cell lists every spelling the document uses (`Tṛtīyā, Tṛtīya (same as our list)`), with
+   the total count, all pages and an example line per spelling; *Already in our list* only has words whose every
+   spelling matches. *Correct spelling* may hold several spellings, separated by commas (or semicolons; a comma
+   inside a label's brackets stays), which become choices (`{{tṛtīya (masculine), tṛtīyā (feminine)}}`; with
+   Always capital `{{}}{{…}}`), or a code typed as stored; filled in with no decision it counts as *Document is
+   right* / *Add*. *Document is right* on a word the document spells two differing ways needs *Correct spelling*
+   (otherwise it is listed and goes to Pending). A hidden *Ref* column (the item id) and a hidden `_dashboard`
+   sheet (report of upload N, trial or live) let rows be sorted or deleted. Uploads made before one row per word
+   (a row per spelling, Refs `c3:0`, `c3:1`) are regrouped when read (`harvest.regroup`, nothing migrated): their
+   report downloads in the new layout with the uploaded decisions merged in, and old-layout files are still read.
 3. **Upload your decisions**: the filled report (or the filled pending list). Values are read case-insensitively;
    obvious free text ("Our list is correct. Always capitalised", "Keep on pending list") is read and listed; anything
    else becomes Pending and is listed. A **confirm page** says what will happen in one sentence ("This will add 3
@@ -243,7 +251,8 @@ Diacritical's word list as an **Excel round trip**, on one page:
    skipped because the entry changed since the report was made. **Apply** changes the list in one transaction (the
    plan is worked out again under a lock and must match what the page showed). A report can be applied once.
 4. **Pending list**: a rolling list, downloadable as Excel (*Your decision*: Add / Remove from pending; *Result*
-   pre-filled with the suggestion; *Capital*; *Notes*) and uploaded back the same way.
+   pre-filled with the suggestion, several spellings separated by commas becoming choices; *Capital*; *Notes*) and
+   uploaded back the same way.
 5. **History** with Undo (the words go back; pending words that change answered go back on the pending list), the
    whole list as Excel, and *Start the trial again* (trial only).
 

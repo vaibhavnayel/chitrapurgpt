@@ -203,7 +203,9 @@ def test_spellings_of_one_word_are_one_item_with_a_row_each():
     assert forms == {"Kṛshṇa": "differs", "Krshṇa": "differs", "Kṛs͟hṇa": "same as our list"}
     assert sorted(clash["options"]) == ["krshṇa", "kṛshṇa"]
     assert [x["result"] for x in clash["rows"]] == clash["options"] and all(x["times"] == 1 for x in clash["rows"])
-    assert sheets.refs(clash) == [f"{clash['id']}:0", f"{clash['id']}:1"]
+    assert sheets.refs(clash) == [clash["id"]]                               # one row per word
+    assert harvest.old_refs(clash) == {f"{clash['id']}:0": 0, f"{clash['id']}:1": 1}   # what reports had before
+    assert [x["form"] for x in clash["same"]] == ["Kṛs͟hṇa"] and clash["times"] == 3
     new = r["sections"]["new"]
     assert len(new) == 1 and sorted(new[0]["options"]) == ["vinayakā", "vināyaka"]
     assert {x["form"] for x in new[0]["rows"]} == {"Vināyaka", "Vinayakā"}
@@ -419,16 +421,20 @@ def test_a_word_spelt_two_ways_and_unclear_rows():
     r = review("Kṛshṇa and Krshṇa met at the dīpa.\n")
     clash = r["sections"]["clash"][0]
     blank = sheets.report_xlsx(r, INFO)
-    both = fill(blank, {("Different from our list", ref): {"Your decision": "Document is right"}
-                        for ref in sheets.refs(clash)})
-    a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", both))
-    assert a["rows"][clash["id"]]["choice"] == "pending" and "more than one spelling" in a["unclear"][0]["why"]
-    one = fill(blank, {("Different from our list", sheets.refs(clash)[1]): {"Your decision": "magazine is right"}})
+    row = {x["Plain word"]: x for x in rows_of(workbook(blank)[DIFF])}["krshna"]
+    assert row["Word (as in the document)"] == "Krshṇa, Kṛshṇa" and row["Ref"] == clash["id"] and row["Times"] == 2
+    # 'Document is right' alone can't say which of the document's spellings: pending, listed
+    which = fill(blank, {(DIFF, "krshna"): {"Your decision": "Document is right"}})
+    a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", which))
+    assert a["rows"][clash["id"]]["choice"] == "pending" and a["rows"][clash["id"]].get("unclear")
+    assert [x["why"] for x in a["unclear"]] == ["the document spells it more than one way: type the spelling(s) "
+                                                "you want in “Correct spelling”"]
+    assert [x["plain"] for x in sheets.plan(r, a, LIST)["pending"]] == ["krshna", "dipa"]
+    one = fill(blank, {(DIFF, "krshna"): {"Your decision": "magazine is right", "Correct spelling": "Krshṇa"}})
     p = sheets.plan(r, sheets.answers_from_report(r, sheets.read_filled("x.xlsx", one)), LIST)
-    assert [(c["plain"], c["result"]) for c in p["update"]] == [("krshna", "{{}}{{" + clash["options"][1] + "}}")]
-    odd = fill(blank, {("Different from our list", sheets.refs(clash)[0]): {"Your decision": "Our list is right",
-                                                                          "Correct spelling": "kṛṣṇa"},
-                       ("New words", "dipa"): {"Your decision": "Add", "Capital": "sometimes"}})
+    assert [(c["plain"], c["result"]) for c in p["update"]] == [("krshna", "{{}}{{krshṇa}}")]
+    odd = fill(blank, {(DIFF, "krshna"): {"Your decision": "Our list is right", "Correct spelling": "kṛṣṇa"},
+                       (NEW, "dipa"): {"Your decision": "Add", "Capital": "sometimes"}})
     a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", odd))
     assert sorted(x["plain"] for x in a["unclear"]) == ["dipa", "krshna"]
     assert {d["choice"] for d in a["rows"].values()} == {"pending"}
@@ -797,3 +803,281 @@ def test_split_also():
     assert sheets.split_also("kṛs͟hṇa", "krshna") == ([], [])
     assert sheets.split_also("x (y), shri-vidya, o'brien", "") == (["shri-vidya", "o'brien"], ["x (y)"])
     assert sheets.also_text("Krushna;krishna", "") == "krushna, krishna"
+
+
+
+# ---------- one row per plain word, several spellings as choices, a correct spelling being enough ----------
+
+CLIST = dict(LIST, trtiya="tṛtīya", deva="deva", arati="āratī", devi="dĕvī", bhatta="bhaṭṭa")   # ĕ, ṭ: letters in use
+CTEXT = ("Tṛtīyā (feminine) and Tṛtīya (masculine).\nDĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)\n"
+         "The Ātma, the Ātmā and the Ātmā again.\nThe Mat̲h̲, the Maṭh and the Mat͟h.\n"
+         "Then the Kshamā Yāchanā and the kshamā yāchanā.\nGaṇesha came with the dīpa and the Dīpa for the pūjā.\n")
+
+
+def test_one_row_per_word_with_every_spelling():
+    r = review(CTEXT, CLIST)
+    s = r["sections"]
+    plains = [i["plain"] for i in s["clash"]] + [i["plain"] for i in s["new"]]
+    assert len(plains) == len(set(plains))                                    # never on both, never twice
+    assert not {i["plain"] for i in s["already"] + s["style"]} & set(plains)   # nor also on 'Already' / 'Style only'
+    assert {"trtiya", "deva", "atma", "math", "kshama yachana"} <= {i["plain"] for i in s["clash"]}
+    wb = workbook(sheets.report_xlsx(r, INFO))
+    rows = {x["Plain word"]: x for x in rows_of(wb[DIFF])}
+    assert len(rows) == len(s["clash"])
+    assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīyā, Tṛtīya (same as our list)"
+    assert rows["atma"]["Word (as in the document)"] == "Ātma, Ātmā (same as our list)" and rows["atma"]["Times"] == 3
+    assert rows["math"]["Word (as in the document)"] == ("Maṭh, Mat͟h (same as our list), Mat̲h̲ (same as our list, "
+                                                         "typed differently: underline instead of the tie)")
+    assert rows["trtiya"]["Example line"] == "Tṛtīyā (feminine) and Tṛtīya (masculine)."   # the same line once
+    assert rows["atma"]["Example line"] == "The Ātma, the Ātmā and the Ātmā again."
+    assert rows["kshama yachana"]["Times"] == 2                               # a phrase typed two ways: one row
+    assert rows["deva"]["Ref"] == next(i["id"] for i in s["clash"] if i["plain"] == "deva")
+    assert {x["Plain word"] for x in rows_of(wb["Already in our list"])} & {"trtiya", "atma", "math"} == set()
+    new = {x["Plain word"]: x for x in rows_of(wb[NEW])}
+    assert new["dipa"]["Word (as in the document)"] == "Dīpa" and new["dipa"]["Times"] == 2   # dīpa too: one spelling
+    assert wb[DIFF]["E3"].alignment.wrap_text
+    assert r["grouped"] and harvest.regroup(r) is r                           # made in the new layout already
+
+
+def test_pages_of_all_spellings_and_merged_items():
+    r = harvest.review_document([("issue.txt", [(2, "The Ātma is one."), (7, "The Ātmā is one."),
+                                                (9, "The Ātma again.")])], LIST)
+    atma = next(i for i in r["sections"]["clash"] if i["plain"] == "atma")
+    assert atma["where"] == "2, 7, 9" and atma["times"] == 3
+    assert harvest.merge_where(["3, 12", "12, 40", ""]) == "3, 12, 40"
+    assert harvest.merge_where(["a.pdf p. 3; b.docx", "a.pdf p. 1, 3", "c 2.pdf p. 4"]) == \
+        "a.pdf p. 1, 3; b.docx; c 2.pdf p. 4"
+    # a review stored before: two items with one plain word are merged, the Refs of their rows remembered
+    old = {"kind": "document", "sections": {
+        "clash": [{"id": "c1", "kind": "clash", "plain": "atma", "entry": "ātmā", "options": ["ātma"],
+                   "rows": [{"form": "Ātma", "result": "ātma", "times": 1, "where": "2", "line": "Ātma"}],
+                   "forms": [{"form": "Ātma", "times": 1, "status": "differs", "gives": "Ātmā"}], "form": "Ātma",
+                   "gives": "Ātmā", "times": 1, "where": "2", "line": "Ātma", "note": ""}],
+        "new": [{"id": "n1", "kind": "new", "plain": "dipa", "options": ["dīpa"], "form": "dīpa", "times": 1,
+                 "rows": [{"form": "dīpa", "result": "dīpa", "times": 1, "where": "3", "line": "the dīpa"}],
+                 "where": "3", "line": "the dīpa", "spellings": ["dīpa"]},
+                {"id": "n2", "kind": "new", "plain": "dipa", "options": ["dīpā"], "form": "dīpā", "times": 2,
+                 "rows": [{"form": "dīpā", "result": "dīpā", "times": 2, "where": "4, 5", "line": "a dīpā"}],
+                 "where": "4, 5", "line": "a dīpā", "spellings": ["dīpā"]},
+                {"id": "n3", "kind": "new", "plain": "atma", "options": ["atmā"], "form": "atmā", "times": 1,
+                 "rows": [{"form": "atmā", "result": "atmā", "times": 1, "where": "6", "line": "atmā"}],
+                 "where": "6", "line": "atmā", "spellings": ["atmā"]}],
+        "already": [{"id": "a1", "plain": "atma", "form": "Ātmā", "times": 4, "where": "8", "line": "Ātmā",
+                     "gives": "Ātmā"}, {"id": "a2", "plain": "puja", "form": "pūjā", "times": 1, "where": "",
+                                        "line": "pūjā", "gives": "pūjā"}]}}
+    g = harvest.regroup(old)
+    assert old["sections"]["already"][0]["id"] == "a1" and len(old["sections"]["new"]) == 3   # stored copy unchanged
+    assert g["counts"] == {"clash": 1, "new": 1, "already": 1, "style": 0}
+    atma, dipa = g["sections"]["clash"][0], g["sections"]["new"][0]
+    assert atma["options"] == ["ātma", "atmā"] and atma["old_refs"] == {"c1:0": 0, "n3:0": 1}
+    assert atma["times"] == 6 and atma["where"] == "2, 6, 8" and [x["form"] for x in atma["same"]] == ["Ātmā"]
+    assert dipa["id"] == "n1" and dipa["options"] == ["dīpa", "dīpā"] and dipa["old_refs"] == {"n1:0": 0, "n2:0": 1}
+    assert dipa["times"] == 3 and dipa["where"] == "3, 4, 5" and dipa["spellings"] == ["dīpa", "dīpā"]
+    assert harvest.regroup(g) is g
+
+
+def test_several_spellings_become_choices():
+    assert sheets.spellings("Tṛtīya (masculine), Tṛtīyā (feminine)") == (
+        ["tṛtīya (masculine)", "tṛtīyā (feminine)"], None, None)
+    assert sheets.spellings("Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit).")[0] == ["dĕvā", "dĕva (koṅkaṇī)",
+                                                                             "deva (sanskrit)"]
+    assert sheets.spellings("āratī (hindi, marathi), ārati (sanskrit)")[0] == [
+        "āratī (hindi, marathi)", "ārati (sanskrit)"]                        # a comma in brackets stays
+    assert sheets.spellings("Kṛs̲h̲ṇa")[0] == ["kṛs͟hṇa"] and sheets.spellings("  ") == ([], None, None)
+    assert sheets.spellings("{{Dĕva}}{{Dĕvā}}") == ([], "{{dĕva}}{{dĕvā}}", None)     # a code, as it is
+    assert "more after the brackets" in sheets.spellings("Tṛtīyā (feminine) and Tṛtīya (masculine)")[2]
+    assert sheets.spellings("{{dĕva}")[1] == "{{dĕva}}"                       # the house style repairs brackets
+    assert "brackets don't make sense" in sheets.spellings("{{a}}{{b}}{{c}}")[2]
+    assert harvest.several(["a", "b"], "capital") == "{{}}{{a, b}}"
+    assert harvest.several(["a", "b"], None, "{{}}{{x}}") == "{{}}{{a, b}}"   # blank keeps an always-capital entry
+    assert harvest.several(["a", "b"], None, "x") == harvest.several(["a", "b"], "normal", "{{}}{{x}}") == "{{a, b}}"
+
+    r = review(CTEXT, CLIST)
+    data = fill(sheets.report_xlsx(r, INFO), {
+        (DIFF, "trtiya"): {"Correct spelling": "Tṛtīya (masculine), Tṛtīyā (feminine)"},          # no decision
+        (DIFF, "deva"): {"Correct spelling": "Dĕvā, Dĕva (koṅkaṇī), Deva (sanskrit)", "Capital": "Always capital"},
+        (DIFF, "atma"): {"Your decision": "Document is right", "Correct spelling": "{{ātma}}{{Ātmā}}"},
+        (DIFF, "math"): {"Your decision": "Pending", "Correct spelling": "mat͟h, maṭh"},
+        (DIFF, "kshama yachana"): {"Correct spelling": "Kshamā Yāchanā (one), kshamā-yāchanā"},
+        (NEW, "ganesha"): {"Your decision": "Add", "Capital": None, "Correct spelling": "gaṇesha; gaṇeśa (old)"},
+        (NEW, "dipa"): {"Correct spelling": "Dīpa"},                                                 # no decision
+    })
+    data = add_rows(data, NEW, [{"Word (as in the document)": "āvaraṇa, āvaraṇā (pl., old)",
+                                 "Capital": "Always capital", "Correct spelling": "āvaraṇa, āvaraṇā (pl., old)"}])
+    a = sheets.answers_from_report(r, sheets.read_filled("x.xlsx", data))
+    assert a["unclear"] == []
+    p = sheets.plan(r, a, CLIST, "talk.docx")
+    upd = {c["plain"]: c["result"] for c in p["update"]}
+    assert upd == {"trtiya": "{{tṛtīya (masculine), tṛtīyā (feminine)}}",
+                   "deva": "{{}}{{dĕvā, dĕva (koṅkaṇī), deva (sanskrit)}}",
+                   "atma": "{{ātma}}{{ātmā}}",
+                   "kshama yachana": "{{kshamā yāchanā (one), kshamā-yāchanā}}"}
+    adds = {c["plain"]: c["result"] for c in p["add"]}
+    assert adds == {"ganesha": "{{gaṇesha, gaṇeśa (old)}}", "dipa": "dīpa",
+                    "avarana": "{{}}{{āvaraṇa, āvaraṇā (pl., old)}}"}          # own row: Correct spelling is enough
+    assert {x["plain"]: x["suggested"] for x in p["pending"]} == {"math": "{{mat͟h, maṭh}}",
+                                                                  "konkani": "{{}}{{koṅkaṇī}}"}   # blank: pending
+    read = {x["word"]: x["read"] for x in a["words"]}
+    assert read["Tṛtīyā, Tṛtīya (same as our list)"] == "Document is right"
+    assert read["Dĕva, Dĕvā"] == "Document is right · Always capital" and read["Dīpa"] == "Add"
+    assert harvest.describe(upd["deva"]) == "choice: Dĕvā or Dĕva (koṅkaṇī) or Deva (sanskrit) (always capital)"
+    from diacritical.diacritics import translate_text
+    after = dict(CLIST, **upd, **adds)
+    assert translate_text("deva Deva trtiya Trtiya", after) == (
+        "{{Dĕvā,Dĕva (koṅkaṇī),Deva (sanskrit)}} {{Dĕvā,Dĕva (koṅkaṇī),Deva (sanskrit)}} "
+        "{{tṛtīya (masculine),tṛtīyā (feminine)}} {{Tṛtīya (masculine),Tṛtīyā (feminine)}}")
+    # a correct spelling with Our list is right / Skip still can't be read
+    odd = fill(sheets.report_xlsx(r, INFO), {(NEW, "ganesha"): {"Your decision": "Skip", "Correct spelling": "x, y"}})
+    assert [x["plain"] for x in sheets.answers_from_report(r, sheets.read_filled("x.xlsx", odd))["unclear"]] == \
+        ["ganesha"]
+
+
+def test_start_here_and_sheet_notes_explain_it():
+    wb = workbook(sheets.report_xlsx(review(CTEXT, CLIST), INFO))
+    start = "\n".join(str(c) for row in wb["Start here"].iter_rows(values_only=True) for c in row if c)
+    assert sheets.CORRECT_HELP in start and "Each word has one row, with every spelling the document uses" in start
+    assert "Tṛtīya (masculine), Tṛtīyā (feminine)" in sheets.CORRECT_HELP
+    assert "it counts as “Document is right”" in wb[DIFF]["A1"].value and "it counts as “Add”" in wb[NEW]["A1"].value
+    assert wb[DIFF].row_dimensions[1].height > 36                            # the longer note fits
+    heads = [c.value for c in wb[DIFF][2]]
+    assert wb[DIFF].cell(3, heads.index("Correct spelling") + 1).fill.fgColor.rgb.endswith("FFF2A8")
+
+
+def test_pending_list_result_with_several_spellings():
+    from datetime import datetime
+    when = datetime(2026, 11, 20, 5, 0)
+
+    def item(i, plain, sug):
+        return {"id": i, "plain_text": plain, "suggested": sug, "reason": "", "source": "", "page": "",
+                "context": "", "notes": "", "also": "", "added_at": when}
+    items = [item(31, "trtiya", "tṛtīyā"), item(32, "deva", "{{}}{{dĕva}}"), item(33, "arati", "{{ārati, āratī}}"),
+             item(34, "namavali", "{{}}{{nāmāvalī (hindi, marathi), nāmāvaliḥ}}")]
+    current = dict(CLIST, deva="{{}}{{deva}}")
+    data = sheets.pending_xlsx(items, current, {"list": "trial", "made_iso": "2026-11-20T10:00:00", "when": str})
+    ws = workbook(data)["Pending"]
+    shown = {x["Plain word"]: (x["Result"], x["Capital"]) for x in rows_of(ws)}
+    assert shown["arati"] == ("ārati, āratī", None)                          # choices written as they are typed
+    assert shown["namavali"] == ("nāmāvalī (hindi, marathi), nāmāvaliḥ", "Always capital")
+    assert "several spellings, separated by commas, become choices" in ws["A1"].value
+    filled = sheets.read_filled("p.xlsx", fill(data, {
+        ("Pending", "trtiya"): {"Your decision": "Add", "Result": "Tṛtīya (masculine), Tṛtīyā (feminine)"},
+        ("Pending", "deva"): {"Your decision": "Add", "Result": "Dĕvā, Dĕva (koṅkaṇī)", "Capital": None},
+        ("Pending", "arati"): {"Your decision": "Add"},
+        ("Pending", "namavali"): {"Your decision": "Add"}}))
+    p = sheets.plan_pending(sheets.answers_from_pending(filled), {i["id"]: i for i in items}, current)
+    got = {c["plain"]: c["result"] for c in p["add"] + p["update"]}
+    assert got == {"trtiya": "{{tṛtīya (masculine), tṛtīyā (feminine)}}",
+                   "deva": "{{}}{{dĕvā, dĕva (koṅkaṇī)}}",                   # blank Capital keeps always capital
+                   "arati": "{{ārati, āratī}}",
+                   "namavali": "{{}}{{nāmāvalī (hindi, marathi), nāmāvaliḥ}}"}
+    assert sheets.compose("a, b (x)", "capital", None) == "{{}}{{a, b (x)}}"
+    assert sheets.compose("{{}}{{a, b}}", None, None) == "{{}}{{a, b}}"
+
+
+# ---------- a review made before one row per word: Shantish's review 1 (trimmed) ----------
+
+def review1():
+    import json
+    return json.loads((Path(__file__).parent / "fixtures" / "words_review1.json").read_text(encoding="utf-8"))
+
+
+def test_review_made_before_downloads_in_the_new_layout_with_its_decisions():
+    fx = review1()
+    items, dec = fx["items"], fx["decisions"]
+    assert any(":" in ref for ref in dec["cells"])                           # stored with a row per spelling
+    info = dict(INFO, review=1)
+    wb = workbook(sheets.report_xlsx(items, info, dec["cells"], dec["extra_cells"]))
+    rows = {x["Plain word"]: x for x in rows_of(wb[DIFF])}
+    assert len(rows) == len(items["sections"]["clash"]) == 7
+    b = rows["bankikodla"]
+    assert (b["Word (as in the document)"], b["Correct spelling"], b["Capital"], b["Your decision"], b["Ref"]) == (
+        "Baṅkīkoḍla, Baṅkīkoḍlā", "Baṅkīkoḍlā", "Always capital", None, "c3")
+    assert rows["trtiya"]["Word (as in the document)"] == "Tṛtīyā, Tṛtīya (same as our list)"
+    assert rows["arati"]["Word (as in the document)"] == "ārati, āratī (same as our list)"
+    assert rows["trtiya"]["Notes"].startswith("It's spelt according to Gender.")
+    assert rows["deva"]["Notes"] == "Result should Show: Dĕvā, Dĕva (Koṅkaṇī); Deva (Sanskrit)"   # once, not twice
+    assert rows["santacruz"]["Your decision"] == "Document is right" and rows["yama"]["Your decision"] == \
+        "Our list is right"
+    already = {x["Word (as in the document)"] for x in rows_of(wb["Already in our list"])}
+    assert "Tṛtīya" not in already and "āratī" not in already and "Ahaṅkāra" in already
+    assert rows_of(wb[NEW])[-1]["Word (as in the document)"] == "thālī"     # his own row, at the bottom
+    assert {x["Plain word"]: x["Also typed as"] for x in rows_of(wb[NEW])}["ishwara"] == "Iswara, Ishwar"
+
+    # uploaded again as it is: Correct spelling with no decision now reads as Document is right
+    again = sheets.read_filled("again.xlsx", sheets.report_xlsx(items, info, dec["cells"], dec["extra_cells"]))
+    assert "c3" in again["cells"] and not any(":" in ref for ref in again["cells"])
+    a = sheets.answers_from_report(items, again)
+    assert a["rows"]["c3"]["choice"] == "doc" and a["unclear"] == []
+    p = sheets.plan(items, a, fx["entries"], "review 1")
+    assert {c["plain"]: c["result"] for c in p["update"]} == {"bankikodla": "{{}}{{baṅkīkoḍlā}}",
+                                                              "santacruz": "{{}}{{sāntācrūz}}"}
+    assert {x["plain"] for x in p["pending"]} == {"arati", "arati-s", "deva", "trtiya"}
+    assert {c["plain"] for c in p["add"]} >= {"abhokta", "thali", "iswara", "ishwar"}
+    # the cells as stored (a row per spelling) read the same way
+    old = sheets.plan(items, sheets.answers_from_report(items, {"cells": dec["cells"], "extra": dec["extra_cells"]}),
+                      fx["entries"], "review 1")
+    def same(plan):                    # his own row sits higher up in the trimmed report: its row number differs
+        return {k: sorted(str({f: v for f, v in x.items() if f not in ("item", "own_row")}) for x in plan[k])
+                for k in ("add", "update", "pending")} | {"resolve": sorted(plan["resolve"])}
+    assert same(old) == same(p)
+
+
+def old_layout_file(fx, answers: dict, info: dict | None = None) -> bytes:
+    """A filled report as it was before one row per word: a row per spelling, Refs 'c3:0', 'c3:1'."""
+    items = fx["items"]
+    wb = workbook(sheets.report_xlsx(items, info or dict(INFO, review=1)))
+    ws = wb[DIFF]
+    heads = [c.value for c in ws[2]]
+    grouped = {i["id"]: i for i in harvest.regroup(items)["sections"]["clash"]}
+    values = [list(r) for r in ws.iter_rows(min_row=3, values_only=True)]
+    out = []
+    for row in values:
+        item = grouped[row[heads.index("Ref")]]
+        for k, spelt in enumerate(item["rows"]):
+            new = list(row)
+            new[heads.index("Word (as in the document)")] = spelt["form"]
+            new[heads.index("Ref")] = f"{item['id']}:{k}"
+            for header, value in answers.get(new[heads.index("Ref")], {}).items():
+                new[heads.index(header)] = value
+            out.append(new)
+    ws.delete_rows(3, ws.max_row)
+    for n, row in enumerate(out, 3):
+        for i, v in enumerate(row, 1):
+            ws.cell(n, i).value = v
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_an_old_layout_filled_file_is_still_read():
+    fx = review1()
+    items = fx["items"]
+    data = old_layout_file(fx, {"c3:1": {"Your decision": "Document is right", "Capital": "Always capital"},
+                                "c4:0": {"Your decision": "Document is right"},
+                                "c4:1": {"Your decision": "Document is right"},
+                                "c6:0": {"Your decision": "Document is right"}})
+    filled = sheets.read_filled("old.xlsx", data)
+    assert {"c3:0", "c3:1", "c4:1"} <= set(filled["cells"])
+    a = sheets.answers_from_report(items, filled)
+    p = sheets.plan(items, a, fx["entries"])
+    assert {c["plain"]: c["result"] for c in p["update"]} == {"bankikodla": "{{}}{{baṅkīkoḍlā}}",   # its row 2
+                                                              "trtiya": "tṛtīyā"}
+    assert [(x["plain"], x["why"]) for x in a["unclear"]] == [
+        ("deva", "“Document is right” was chosen on more than one spelling")]
+    # the same spelling on both rows is no conflict (he filled Correct spelling on both)
+    both = old_layout_file(fx, {r: {"Correct spelling": "Baṅkīkoḍlā", "Capital": "Always capital"}
+                                for r in ("c3:0", "c3:1")})
+    a = sheets.answers_from_report(items, sheets.read_filled("old.xlsx", both))
+    assert a["rows"]["c3"]["choice"] == "doc" and a["unclear"] == []
+    # shown again in the new layout: the rows merged; a different value goes into Notes
+    cells = {"c4:0": {"decision": "Our list is right", "capital": "", "spelling": "", "notes": "ask",
+                      "sheet": DIFF, "row": 3},
+             "c4:1": {"decision": "Pending", "capital": "Normal", "spelling": "", "notes": "ask", "sheet": DIFF,
+                      "row": 4},
+             "c3:1": {"decision": "Document is right", "capital": "", "spelling": "", "notes": "", "sheet": DIFF,
+                      "row": 5}}
+    rows = {x["Plain word"]: x for x in rows_of(workbook(sheets.report_xlsx(items, INFO, cells))[DIFF])}
+    assert (rows["deva"]["Your decision"], rows["deva"]["Capital"]) == ("Our list is right", "Normal")
+    assert rows["deva"]["Notes"] == "ask · the Dĕvā row said Your decision: Pending"
+    assert (rows["bankikodla"]["Your decision"], rows["bankikodla"]["Correct spelling"]) == (
+        "Document is right", "Baṅkīkoḍlā")                                  # which spelling it was on

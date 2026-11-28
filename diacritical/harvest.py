@@ -6,7 +6,9 @@ report is made from (admin_words.py; the Excel side is diacritical/sheets.py). P
 - Document review: review_document(files, mappings) finds every word with marks (and every plain word the list would
   mark) and sorts them into: different from our list (clash), new, written without marks, style only, doubtful
   (look-alike letters, PDF quirks), already in the list. Phrase entries of the list found in the text are compared.
-  Clashes and new words have one row per spelling found ('rows').
+  One item per plain word on clash and new (group_words): 'rows' are its spellings that differ from the list (the
+  'options' of "Document is right" / "Add"), 'same' the spellings that match it (so they aren't also on 'already').
+  regroup() puts a review stored before that into the same layout when it is read (old_refs: the Refs its rows had).
 - List review: review_list(rows, problems, mappings): new, changed, missing from the file, problems, unchanged.
 - Stored codes: parse_code, with_type (normal / always capital), replace_result, describe(code) for people.
 
@@ -576,12 +578,144 @@ def review_document(files: list[tuple[str, list[tuple[int | None, str]]]], mappi
         doubtful.append({"form": f"page {p}" if p else names[f], "times": 1, "where": where([(f, p)], names),
                          "line": line[:170], "why": "Indian-script text whose font doesn't copy out correctly"})
 
-    sections = {"clash": clashes, "new": new, "unmarked": unmarked_items, "style": style, "doubtful": doubtful,
-                "already": already}
+    sections = group_words({"clash": clashes, "new": new, "unmarked": unmarked_items, "style": style,
+                            "doubtful": doubtful, "already": already})
     _number(sections)
     return {"kind": "document", "sections": sections,
             "counts": {k: len(v) for k, v in sections.items()},
-            "words_with_marks": sum(1 for w in occ if has_marks(w))}
+            "words_with_marks": sum(1 for w in occ if has_marks(w)), "grouped": GROUPED}
+
+
+# ---------- one row per plain word ----------
+
+GROUPED = 2      # review['grouped']: the items are one per plain word (reviews made before it are regrouped on reading)
+
+
+def merge_where(wheres: list[str]) -> str:
+    """The pages of several where() texts together: '3, 12' + '12, 40' -> '3, 12, 40'; with file names
+    ('a.pdf p. 3; b.docx') per file."""
+    by_file, order = {}, []
+    for text in wheres:
+        for part in (p.strip() for p in str(text or "").split("; ")):
+            if not part:
+                continue
+            if re.fullmatch(r"[\d, ]+", part):
+                name, pages = "", part
+            elif " p. " in part:
+                name, _, pages = part.rpartition(" p. ")
+            else:
+                name, pages = part, ""
+            if name not in by_file:
+                by_file[name] = set()
+                order.append(name)
+            by_file[name] |= {int(x) for x in re.findall(r"\d+", pages)}
+    parts = []
+    for name in order:
+        pages = ", ".join(str(p) for p in sorted(by_file[name]))
+        parts.append(f"{name} p. {pages}" if name and pages else name or pages)
+    return "; ".join(p for p in parts if p)
+
+
+def old_refs(item: dict) -> dict[str, int]:
+    """The Refs a report made before one row per word gave this item's spellings: {'c3:0': option 0, ...}."""
+    if item.get("old_refs") is not None:
+        return item["old_refs"]
+    return {f"{item['id']}:{k}": k for k in range(len(item.get("rows") or [item]))} if item.get("id") else {}
+
+
+def _same(item: dict, status: str) -> dict:
+    """A spelling of the document that matches our list (an 'already' or 'style' item), as part of its word's row."""
+    return {"form": item["form"], "times": item.get("times", 0), "where": item.get("where", ""),
+            "line": item.get("line", ""), "status": status, "why": item.get("why", ""), "gives": item.get("gives", "")}
+
+
+def group_words(sections: dict) -> dict:
+    """One item per plain word on 'Different from our list' and 'New words': clash items with the same plain word
+    (a phrase typed two ways) are merged, a new word with the plain word of a clash joins the clash, and the
+    spellings that match our list ('already', 'style') of a word with a row are moved into that row ('same').
+    Pure: returns new sections (the items copied); ids are kept, and each item remembers the Refs its spellings
+    had in a report made before (old_refs), so old filled files can still be read."""
+    import copy
+    s = copy.deepcopy(sections)
+    rows_by_plain, clash, new = {}, [], []
+
+    def start(item):
+        if item.get("id") and item.get("old_refs") is None:
+            item["old_refs"] = old_refs(item)
+        item.setdefault("rows", [])
+        item.setdefault("same", [])
+        return item
+
+    def absorb(into, item):
+        """item's spellings become spellings of `into` (same plain word)."""
+        offset = {}
+        for k, (opt, row) in enumerate(zip(item.get("options") or [], item.get("rows") or [])):
+            if opt in into["options"]:
+                j = into["options"].index(opt)
+                r = into["rows"][j]
+                r["times"] = r.get("times", 0) + row.get("times", 0)
+                r["where"] = merge_where([r.get("where", ""), row.get("where", "")])
+            else:
+                j = len(into["options"])
+                into["options"].append(opt)
+                into["rows"].append(row)
+            offset[k] = j
+        refs = old_refs(item)
+        if refs:
+            into.setdefault("old_refs", {}).update({ref: offset.get(k, 0) for ref, k in refs.items()})
+        into["same"] += item.get("same") or []
+        into["forms"] = (into.get("forms") or []) + [f for f in item.get("forms") or []
+                                                     if f.get("status") == "differs"]
+        if item.get("spellings"):
+            into["spellings"] = list(dict.fromkeys((into.get("spellings") or []) + item["spellings"]))
+        if into.get("note") != item.get("note"):
+            into["note"] = ""
+
+    for item in s.get("clash") or []:
+        if item["plain"] in rows_by_plain:
+            absorb(rows_by_plain[item["plain"]], item)
+        else:
+            rows_by_plain[item["plain"]] = start(item)
+            clash.append(item)
+    for item in s.get("new") or []:
+        if item["plain"] in rows_by_plain:
+            into = rows_by_plain[item["plain"]]
+            if into["kind"] == "clash":       # spelt as a new word somewhere, differently from our list elsewhere
+                item = dict(item, forms=[{"form": r["form"], "times": r.get("times", 0), "status": "differs",
+                                          "gives": r["form"]} for r in item.get("rows") or []])
+            absorb(into, item)
+        else:
+            rows_by_plain[item["plain"]] = start(item)
+            new.append(item)
+    for name, status in (("already", "same as our list"), ("style", "style only")):
+        kept = []
+        for item in s.get(name) or []:
+            into = rows_by_plain.get(item["plain"])
+            if into is None:
+                kept.append(item)
+            elif item["form"] not in [x["form"] for x in into["same"]]:
+                into["same"].append(_same(item, status))
+        s[name] = kept
+    for item in clash + new:
+        same = item["same"]
+        differing = [f for f in item.get("forms") or [] if f.get("status") == "differs"]
+        item["forms"] = differing + [{"form": x["form"], "times": x["times"], "status": x["status"],
+                                      "gives": x.get("gives", "")} for x in same]
+        item["times"] = sum(r.get("times", 0) for r in item["rows"]) + sum(x["times"] for x in same)
+        item["where"] = merge_where([r.get("where", "") for r in item["rows"]] + [x["where"] for x in same])
+        if item["rows"]:
+            item["form"], item["line"] = item["rows"][0]["form"], item["rows"][0].get("line", item.get("line", ""))
+    s["clash"], s["new"] = clash, new
+    return s
+
+
+def regroup(review: dict) -> dict:
+    """A stored review in the layout of one row per plain word (a review made before it is regrouped; the stored
+    copy isn't changed). Reviews of lists and grouped reviews are returned as they are."""
+    if not review or review.get("kind") != "document" or (review.get("grouped") or 0) >= GROUPED:
+        return review
+    sections = group_words(review["sections"])
+    return dict(review, sections=sections, counts={k: len(v) for k, v in sections.items()}, grouped=GROUPED)
 
 
 def _number(sections: dict) -> None:
@@ -647,7 +781,17 @@ def with_type(code: str, cap: str) -> str:
     main = p["main"]
     if cap == "capital":
         return clean_result("{{}}{{" + main + "}}")
-    return clean_result("{{" + main + "}}" if "," in main else main)
+    return clean_result("{{" + main + "}}" if CHOICE_COMMA.search(main) else main)
+
+
+def several(spellings: list[str], cap: str | None, entry: str | None = None) -> str:
+    """Several spellings as choices, {{a, b (label)}}; with cap "capital" {{}}{{a, b}}. Without a capital chosen,
+    an entry that is always capital stays so."""
+    code = clean_result("{{" + ", ".join(spellings) + "}}")
+    if cap not in ("normal", "capital"):
+        p = parse_code(entry) if entry else None
+        cap = "capital" if p and p["type"] == "capital" else "normal"
+    return with_type(code, cap)
 
 
 def replace_result(code: str | None, result: str, capitalised: bool) -> str:

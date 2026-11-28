@@ -234,13 +234,20 @@ def get_review(conn, name: str, review_id: int) -> dict | None:
 
 
 def uploads(conn, name: str, limit: int = 30) -> list[dict]:
-    """Recent uploads of documents and lists (newest first), with whether decisions are waiting to be applied."""
-    return conn.execute("""
+    """Recent uploads of documents and lists (newest first), with whether decisions are waiting to be applied. The
+    counts of an upload made before one row per word are those of its regrouped items (harvest.regroup)."""
+    rows = conn.execute("""
         SELECT r.id, r.kind, r.title, r.files, r.created_by, r.created_at, r.status, r.accepted_at, r.updated_at,
-               r.batch_id, r.items->'counts' AS counts, r.decisions <> '{}'::jsonb AS decided, b.undone_at
+               r.batch_id, r.items->'counts' AS counts, r.decisions <> '{}'::jsonb AS decided, b.undone_at,
+               r.kind = 'document' AND COALESCE((r.items->>'grouped')::int, 0) < %s AS regroup
         FROM dia_review r LEFT JOIN dia_batch b ON b.id = r.batch_id
         WHERE r.list_name = %s AND r.kind IN ('document', 'list') ORDER BY r.id DESC LIMIT %s""",
-                        (name, limit)).fetchall()
+                        (harvest.GROUPED, name, limit)).fetchall()
+    for r in rows:
+        if r.pop("regroup"):
+            items = conn.execute("SELECT items FROM dia_review WHERE id = %s", (r["id"],)).fetchone()["items"]
+            r["counts"] = harvest.regroup(items)["counts"]
+    return rows
 
 
 def _day(t) -> str:
@@ -323,6 +330,11 @@ def plan_for(conn, name: str, rv: dict) -> dict:
         p = sheets.plan_pending(answers, {r["id"]: r for r in open_rows}, current)
     else:
         source = ", ".join(f["name"] for f in rv["files"]) + f" (upload {rv['id']})"
+        if answers.get("cells") is not None:
+            # read again from the cells as uploaded, so decisions stored before a change in how they are read (one
+            # row per word, a correct spelling being enough) are read the way they are now
+            answers = answers | sheets.answers_from_report(rv["items"], {"cells": answers["cells"],
+                                                                         "extra": answers.get("extra_cells") or []})
         p = sheets.plan(rv["items"], answers, current, source)
     waiting = {(r["plain_text"], r["suggested"]) for r in open_rows}
     new, seen = [], set()
